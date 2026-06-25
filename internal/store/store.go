@@ -28,6 +28,30 @@ type StageRecord struct {
 	Error          string
 }
 
+type JobStatus string
+
+const (
+	JobStatusCreated   JobStatus = "created"
+	JobStatusRunning   JobStatus = "running"
+	JobStatusSucceeded JobStatus = "succeeded"
+	JobStatusFailed    JobStatus = "failed"
+)
+
+// JobRecord is the document-level row. SubmitPages writes it on entry,
+// Merge finalises it on success, and the document workflow flips it to
+// failed if any stage reports failure. Per-page progress is derived from
+// StageRecord entries via ListStagesByJob — there is no separate per-page
+// row in v0.
+type JobRecord struct {
+	JobID     string
+	Status    JobStatus
+	InputURI  string
+	ResultURI string
+	PageCount int
+	Error     string
+	UpdatedAt string
+}
+
 // Store persists per-stage state for the Executor.
 //
 // Contract: every write is an unconditional overwrite. The "succeeded →
@@ -49,4 +73,14 @@ type Store interface {
 	MarkRunning(ctx context.Context, in pipeline.StepInput) error
 	MarkSucceeded(ctx context.Context, out pipeline.StepOutput, nextStage string) error
 	MarkFailed(ctx context.Context, in pipeline.StepInput, err error) error
+
+	// GetJob returns (nil, nil) when no record exists.
+	GetJob(ctx context.Context, jobID string) (*JobRecord, error)
+	// PutJob unconditionally overwrites the job row. Same overwrite
+	// contract as the stage writers.
+	PutJob(ctx context.Context, rec JobRecord) error
+	// ListStagesByJob enumerates every StageRecord for the given (jobID,
+	// stage, version). CheckPages and Merge use this to count
+	// succeeded/failed pages and to gather per-page result URIs.
+	ListStagesByJob(ctx context.Context, jobID string, stage string, version string) ([]StageRecord, error)
 }
