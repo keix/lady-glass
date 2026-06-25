@@ -23,8 +23,10 @@ import (
 // writes its result to S3 / DynamoDB. There is no next stage; the chain
 // terminates here for v0.
 //
-// The step is currently gemini.Mock; swap it for the real Gemini-backed
-// implementation when Phase 6 lands.
+// Phase 6 plan: swap gemini.Mock for a real ai.Step backed by the
+// Google AI Studio Gemini client, configured via LADY_GLASS_GEMINI_API_KEY.
+// Step is the only seam that changes — store, queue, handler, and
+// executor wiring stay as-is.
 func main() {
 	ctx := context.Background()
 

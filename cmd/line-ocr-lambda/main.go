@@ -20,11 +20,15 @@ import (
 	"github.com/keix/lady-glass/internal/store"
 )
 
-// line-ocr-lambda consumes from line-ocr-queue, runs the LINE OCR step,
+// line-ocr-lambda consumes from line-ocr-queue, runs the line_ocr step,
 // writes its result to S3 / DynamoDB, and enqueues the gemini stage.
 //
-// The step is currently lineocr.Mock; swap it for the real LINE OCR-backed
-// implementation when Phase 6 lands — Step is the only seam that changes.
+// v0 status: intentionally wired with lineocr.Mock. The line_ocr stage
+// is a chain-demonstration scaffold; multimodal Gemini handles OCR
+// alongside extraction in gemini-lambda, so a real pre-processing OCR
+// Step is not on the critical path. The binary is kept buildable so
+// the multi-stage chain stays end-to-end validatable; deploy it only
+// if real OCR pre-processing later becomes useful.
 func main() {
 	ctx := context.Background()
 
