@@ -19,19 +19,29 @@ import (
 	"github.com/keix/lady-glass/internal/store"
 )
 
-// gemini-lambda consumes from gemini-queue, runs the Gemini step, and
-// writes its result to S3 / DynamoDB. There is no next stage; the chain
-// terminates here for v0.
+// gemini-lambda consumes from gemini-queue, runs the Gemini multimodal
+// extraction step against the page image, and writes the JSON result to
+// S3 / DynamoDB. There is no next stage; the chain terminates here for v0.
 //
-// Phase 6 plan: swap gemini.Mock for a real ai.Step backed by the
-// Google AI Studio Gemini client, configured via LADY_GLASS_GEMINI_API_KEY.
-// Step is the only seam that changes — store, queue, handler, and
-// executor wiring stay as-is.
+// Required env:
+//
+//	LADY_GLASS_TABLE              DynamoDB table name
+//	LADY_GLASS_BUCKET             S3 bucket for artifacts
+//	LADY_GLASS_GEMINI_API_KEY     Google AI Studio API key
+//
+// Optional env:
+//
+//	LADY_GLASS_GEMINI_MODEL       Gemini model (default: gemini-2.5-flash)
 func main() {
 	ctx := context.Background()
 
 	table := mustEnv("LADY_GLASS_TABLE")
 	bucket := mustEnv("LADY_GLASS_BUCKET")
+	apiKey := mustEnv("LADY_GLASS_GEMINI_API_KEY")
+	model := os.Getenv("LADY_GLASS_GEMINI_MODEL")
+	if model == "" {
+		model = "gemini-2.5-flash"
+	}
 
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
@@ -41,11 +51,16 @@ func main() {
 	objects := object.NewS3Store(s3.NewFromConfig(cfg), bucket)
 	st := store.NewDynamoStore(dynamodb.NewFromConfig(cfg), table)
 
-	// Producing queue is unused (no NextStage) but is initialized to a
-	// working SQS client so chain extensions only require an env entry.
+	// Producing queue is unused (no NextStage) but stays wired so chain
+	// extensions only require an env entry.
 	q := queue.NewSQSQueue(sqs.NewFromConfig(cfg), map[string]string{})
 
-	step := &gemini.Mock{Objects: objects}
+	sdkClient, err := gemini.NewSDKClient(ctx, apiKey, model)
+	if err != nil {
+		log.Fatalf("init gemini client: %v", err)
+	}
+
+	step := &gemini.Step{Client: sdkClient, Objects: objects}
 
 	ex := &executor.Executor{
 		Step:  step,
