@@ -17,6 +17,7 @@ import (
 type DynamoClient interface {
 	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 }
 
 // DynamoStore implements store.Store on top of a single-table DynamoDB
@@ -120,6 +121,97 @@ func (s *DynamoStore) putStage(ctx context.Context, item stageItem) error {
 	return nil
 }
 
+func (s *DynamoStore) GetJob(ctx context.Context, jobID string) (*JobRecord, error) {
+	out, err := s.Client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(s.Table),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: jobPK(jobID)},
+			"sk": &types.AttributeValueMemberS{Value: jobSK()},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: get job: %w", err)
+	}
+	if out.Item == nil {
+		return nil, nil
+	}
+
+	var item jobItem
+	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
+		return nil, fmt.Errorf("store: unmarshal job: %w", err)
+	}
+	rec := item.toRecord()
+	return &rec, nil
+}
+
+func (s *DynamoStore) PutJob(ctx context.Context, rec JobRecord) error {
+	item := jobItem{
+		PK:        jobPK(rec.JobID),
+		SK:        jobSK(),
+		JobID:     rec.JobID,
+		Status:    string(rec.Status),
+		InputURI:  rec.InputURI,
+		ResultURI: rec.ResultURI,
+		PageCount: rec.PageCount,
+		Error:     rec.Error,
+		UpdatedAt: nowRFC3339(),
+	}
+
+	av, err := attributevalue.MarshalMap(item)
+	if err != nil {
+		return fmt.Errorf("store: marshal job: %w", err)
+	}
+	if _, err := s.Client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(s.Table),
+		Item:      av,
+	}); err != nil {
+		return fmt.Errorf("store: put job: %w", err)
+	}
+	return nil
+}
+
+// ListStagesByJob queries the single-table layout using PK=JOB#<id> and
+// SK begins_with PAGE# and matches the (stage, version) suffix client-side.
+// For v0 the result fits in a single Query response; pagination via
+// LastEvaluatedKey is deferred until a job needs more pages than a single
+// 1MB Query page can carry.
+func (s *DynamoStore) ListStagesByJob(ctx context.Context, jobID string, stage string, version string) ([]StageRecord, error) {
+	out, err := s.Client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(s.Table),
+		KeyConditionExpression: aws.String("#pk = :pk AND begins_with(#sk, :sk_prefix)"),
+		ExpressionAttributeNames: map[string]string{
+			"#pk": "pk",
+			"#sk": "sk",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":        &types.AttributeValueMemberS{Value: jobPK(jobID)},
+			":sk_prefix": &types.AttributeValueMemberS{Value: "PAGE#"},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: list stages: %w", err)
+	}
+
+	suffix := fmt.Sprintf("#STAGE#%s#%s", stage, version)
+
+	out2 := make([]StageRecord, 0, len(out.Items))
+	for _, raw := range out.Items {
+		var item stageItem
+		if err := attributevalue.UnmarshalMap(raw, &item); err != nil {
+			return nil, fmt.Errorf("store: unmarshal stage: %w", err)
+		}
+		if !endsWith(item.SK, suffix) {
+			continue
+		}
+		out2 = append(out2, item.toRecord())
+	}
+	return out2, nil
+}
+
+func endsWith(s, suffix string) bool {
+	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
+}
+
 // stageItem is the DynamoDB representation of a StageRecord. Field tags are
 // the persisted attribute names; PK/SK are partition and sort keys.
 type stageItem struct {
@@ -158,8 +250,41 @@ func (i stageItem) toRecord() StageRecord {
 	}
 }
 
+// jobItem is the DynamoDB representation of a JobRecord. PK=JOB#<id>,
+// SK=META so it lives in the same partition as the job's stage rows for
+// single-query retrieval.
+type jobItem struct {
+	PK string `dynamodbav:"pk"`
+	SK string `dynamodbav:"sk"`
+
+	JobID     string `dynamodbav:"job_id"`
+	Status    string `dynamodbav:"status"`
+	InputURI  string `dynamodbav:"input_uri,omitempty"`
+	ResultURI string `dynamodbav:"result_uri,omitempty"`
+	PageCount int    `dynamodbav:"page_count,omitempty"`
+	Error     string `dynamodbav:"error,omitempty"`
+
+	UpdatedAt string `dynamodbav:"updated_at"`
+}
+
+func (i jobItem) toRecord() JobRecord {
+	return JobRecord{
+		JobID:     i.JobID,
+		Status:    JobStatus(i.Status),
+		InputURI:  i.InputURI,
+		ResultURI: i.ResultURI,
+		PageCount: i.PageCount,
+		Error:     i.Error,
+		UpdatedAt: i.UpdatedAt,
+	}
+}
+
 func jobPK(jobID string) string {
 	return "JOB#" + jobID
+}
+
+func jobSK() string {
+	return "META"
 }
 
 func stageSK(page int, stage, version string) string {

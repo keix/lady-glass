@@ -1,0 +1,15 @@
+{
+  "app": "go mod download && go run .",
+  "watch": {
+    "include": [
+      "**/*.go"
+    ],
+    "exclude": [
+      "bin/**",
+      "cdk.out/**"
+    ]
+  },
+  "context": {
+    "aws-cdk:enableDiffNoFail": true
+  }
+}

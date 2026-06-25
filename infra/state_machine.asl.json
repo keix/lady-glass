@@ -1,0 +1,71 @@
+{
+  "Comment": "Lady Glass document-level workflow. Step Functions orchestrates SubmitPages -> Wait -> CheckPages -> Choice -> Merge / MarkJobFailed. Per-page AI work happens entirely inside the SQS+Lambda chain, not in this state machine.",
+  "StartAt": "SubmitPages",
+  "States": {
+    "SubmitPages": {
+      "Type": "Task",
+      "Resource": "${SubmitPagesLambdaArn}",
+      "Parameters": {
+        "job_id.$": "$.job_id",
+        "input_uri.$": "$.input_uri",
+        "pages.$": "$.pages",
+        "first_queue.$": "$.first_queue"
+      },
+      "ResultPath": "$.submit_result",
+      "Next": "WaitForPages"
+    },
+    "WaitForPages": {
+      "Type": "Wait",
+      "Seconds": 10,
+      "Next": "CheckPages"
+    },
+    "CheckPages": {
+      "Type": "Task",
+      "Resource": "${CheckPagesLambdaArn}",
+      "Parameters": {
+        "job_id.$": "$.job_id",
+        "page_count.$": "$.submit_result.page_count",
+        "final_stage.$": "$.final_stage",
+        "final_version.$": "$.final_version"
+      },
+      "ResultPath": "$.check_result",
+      "Next": "JobStatus?"
+    },
+    "JobStatus?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.check_result.status",
+          "StringEquals": "succeeded",
+          "Next": "Merge"
+        },
+        {
+          "Variable": "$.check_result.status",
+          "StringEquals": "failed",
+          "Next": "MarkJobFailed"
+        }
+      ],
+      "Default": "WaitForPages"
+    },
+    "Merge": {
+      "Type": "Task",
+      "Resource": "${MergeLambdaArn}",
+      "Parameters": {
+        "job_id.$": "$.job_id",
+        "page_count.$": "$.submit_result.page_count",
+        "final_stage.$": "$.final_stage",
+        "final_version.$": "$.final_version"
+      },
+      "End": true
+    },
+    "MarkJobFailed": {
+      "Type": "Task",
+      "Resource": "${MarkJobFailedLambdaArn}",
+      "Parameters": {
+        "job_id.$": "$.job_id",
+        "error": "one or more page stages reported status=failed"
+      },
+      "End": true
+    }
+  }
+}

@@ -15,10 +15,11 @@ import (
 )
 
 type fakeDynamoClient struct {
-	items   map[string]map[string]types.AttributeValue
-	lastPut *dynamodb.PutItemInput
-	getErr  error
-	putErr  error
+	items    map[string]map[string]types.AttributeValue
+	lastPut  *dynamodb.PutItemInput
+	getErr   error
+	putErr   error
+	queryErr error
 }
 
 func newFakeDynamoClient() *fakeDynamoClient {
@@ -48,6 +49,26 @@ func (f *fakeDynamoClient) PutItem(_ context.Context, in *dynamodb.PutItemInput,
 	f.items[keyOf(in.Item)] = in.Item
 	f.lastPut = in
 	return &dynamodb.PutItemOutput{}, nil
+}
+
+// Query honours the "PK = :pk AND begins_with(SK, :sk_prefix)" pattern
+// emitted by DynamoStore.ListStagesByJob. Extra Query shapes can be
+// added when the production code starts using them.
+func (f *fakeDynamoClient) Query(_ context.Context, in *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
+	if f.queryErr != nil {
+		return nil, f.queryErr
+	}
+	pk := in.ExpressionAttributeValues[":pk"].(*types.AttributeValueMemberS).Value
+	skPrefix := in.ExpressionAttributeValues[":sk_prefix"].(*types.AttributeValueMemberS).Value
+
+	var matches []map[string]types.AttributeValue
+	for key, item := range f.items {
+		if !strings.HasPrefix(key, pk+"|"+skPrefix) {
+			continue
+		}
+		matches = append(matches, item)
+	}
+	return &dynamodb.QueryOutput{Items: matches}, nil
 }
 
 func TestDynamoStore_GetStage_ReturnsNilWhenAbsent(t *testing.T) {
@@ -171,6 +192,98 @@ func TestDynamoStore_PageZero_UsesJobLevelSortKey(t *testing.T) {
 	}
 	if got := fake.lastPut.Item["sk"].(*types.AttributeValueMemberS).Value; got != "STAGE#merge#v1" {
 		t.Fatalf("sk = %q, want STAGE#merge#v1", got)
+	}
+}
+
+func TestDynamoStore_GetJob_ReturnsNilWhenAbsent(t *testing.T) {
+	fake := newFakeDynamoClient()
+	st := store.NewDynamoStore(fake, "lady-glass")
+
+	rec, err := st.GetJob(context.Background(), "missing-job")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if rec != nil {
+		t.Fatalf("expected nil record, got %+v", rec)
+	}
+}
+
+func TestDynamoStore_PutAndGetJob_RoundTrips(t *testing.T) {
+	fake := newFakeDynamoClient()
+	st := store.NewDynamoStore(fake, "lady-glass")
+	ctx := context.Background()
+
+	err := st.PutJob(ctx, store.JobRecord{
+		JobID:     "job_x",
+		Status:    store.JobStatusRunning,
+		InputURI:  "s3://bkt/jobs/job_x/input.pdf",
+		PageCount: 3,
+	})
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	if got := fake.lastPut.Item["sk"].(*types.AttributeValueMemberS).Value; got != "META" {
+		t.Fatalf("sk = %q, want META", got)
+	}
+
+	rec, err := st.GetJob(ctx, "job_x")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("expected record, got nil")
+	}
+	if rec.Status != store.JobStatusRunning {
+		t.Fatalf("status = %q, want running", rec.Status)
+	}
+	if rec.PageCount != 3 {
+		t.Fatalf("page count = %d, want 3", rec.PageCount)
+	}
+	if rec.InputURI != "s3://bkt/jobs/job_x/input.pdf" {
+		t.Fatalf("input_uri = %q", rec.InputURI)
+	}
+}
+
+func TestDynamoStore_ListStagesByJob_FiltersAndIgnoresUnrelatedStages(t *testing.T) {
+	fake := newFakeDynamoClient()
+	st := store.NewDynamoStore(fake, "lady-glass")
+	ctx := context.Background()
+
+	// Seed: three gemini v1 pages, one line_ocr v1 page (must be filtered),
+	// one gemini v2 page (must be filtered).
+	for _, page := range []int{1, 2, 3} {
+		if err := st.MarkSucceeded(ctx, pipeline.StepOutput{
+			JobID: "job_y", Page: page, Stage: "gemini", Version: "v1",
+			ResultURI: "s3://bkt/r",
+		}, ""); err != nil {
+			t.Fatalf("seed page %d: %v", page, err)
+		}
+	}
+	if err := st.MarkSucceeded(ctx, pipeline.StepOutput{
+		JobID: "job_y", Page: 1, Stage: "line_ocr", Version: "v1",
+		ResultURI: "s3://bkt/r",
+	}, "gemini"); err != nil {
+		t.Fatalf("seed line_ocr: %v", err)
+	}
+	if err := st.MarkSucceeded(ctx, pipeline.StepOutput{
+		JobID: "job_y", Page: 2, Stage: "gemini", Version: "v2",
+		ResultURI: "s3://bkt/r",
+	}, ""); err != nil {
+		t.Fatalf("seed v2: %v", err)
+	}
+
+	recs, err := st.ListStagesByJob(ctx, "job_y", "gemini", "v1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 3 {
+		t.Fatalf("matched %d records, want 3", len(recs))
+	}
+	for _, r := range recs {
+		if r.Stage != "gemini" || r.Version != "v1" {
+			t.Fatalf("record %+v leaked through filter", r)
+		}
 	}
 }
 

@@ -2,5 +2,8 @@
 /.result/
 /docs/
 /testdata/private/
+/infra/cdk/bin/
+/infra/cdk/cdk.out/
+/infra/cdk/cdk
 .env
 .env.*
