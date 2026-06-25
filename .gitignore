@@ -1,4 +1,6 @@
 /out/
 /.result/
 /docs/
+/testdata/private/
 .env
+.env.*
