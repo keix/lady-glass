@@ -36,6 +36,11 @@ func (s *Mock) Run(ctx context.Context, in pipeline.StepInput) (pipeline.StepOut
 		return pipeline.StepOutput{}, err
 	}
 
+	usage := &pipeline.Usage{
+		Provider: "mock",
+		Model:    "mock-line-ocr",
+	}
+
 	return pipeline.StepOutput{
 		JobID:     in.JobID,
 		Page:      in.Page,
@@ -43,9 +48,6 @@ func (s *Mock) Run(ctx context.Context, in pipeline.StepInput) (pipeline.StepOut
 		Version:   s.Version(),
 		ResultURI: resultURI,
 		TextURI:   textURI,
-		Usage: &pipeline.Usage{
-			Provider: "mock",
-			Model:    "mock-line-ocr",
-		},
+		Usage:     usage,
 	}, nil
 }

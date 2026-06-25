@@ -17,6 +17,25 @@ type Executor struct {
 	Queue     queue.Queue
 }
 
+// Execute runs the wrapped Step for in. status=succeeded short-circuits
+// past Step.Run and only re-enqueues the next stage — this is the central
+// idempotency guarantee that survives SQS redelivery, Lambda
+// re-invocation, and Step Functions retry. All other statuses (nil,
+// running, failed) fall through to the standard path and Step.Run is
+// invoked again.
+//
+// What v0 does NOT detect:
+//   - stuck "running" (no lease, no TTL, no heartbeat). A Lambda that
+//     dies between MarkRunning and MarkSucceeded leaves the record in
+//     running; the next delivery falls through and re-runs the Step.
+//     SQS visibility timeout + MaxReceiveCount + DLQ are the upstream
+//     backstop.
+//   - retry exhaustion at the stage level (no attempt counter on the
+//     record; only the latest error message is kept).
+//   - concurrent in-flight execution. Under reserved concurrency > 1 or
+//     a visibility-timeout race, two workers can both call Step.Run and
+//     the external API is hit twice. The downstream stage absorbs the
+//     duplicate via its own succeeded-skip on next-stage delivery.
 func (e *Executor) Execute(ctx context.Context, in pipeline.StepInput) error {
 	stage := e.Step.Name()
 	version := e.Step.Version()

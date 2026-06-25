@@ -119,6 +119,83 @@ func TestExecutor_NextStageMessageCarriesOriginalInputURI(t *testing.T) {
 	}
 }
 
+// flakyStep fails on the first Run, then succeeds on subsequent calls.
+// Used to verify the failed → retry → succeeded state transition.
+type flakyStep struct {
+	calls int
+}
+
+func (s *flakyStep) Name() string    { return "line_ocr" }
+func (s *flakyStep) Version() string { return "v1" }
+func (s *flakyStep) Run(_ context.Context, in pipeline.StepInput) (pipeline.StepOutput, error) {
+	s.calls++
+	if s.calls == 1 {
+		return pipeline.StepOutput{}, errors.New("simulated step failure")
+	}
+	return pipeline.StepOutput{
+		JobID:     in.JobID,
+		Page:      in.Page,
+		Stage:     s.Name(),
+		Version:   s.Version(),
+		ResultURI: "file://stub-result.json",
+	}, nil
+}
+
+func TestExecutor_FailedStageIsRerunOnNextDelivery(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	q := queue.NewMemoryQueue()
+
+	step := &flakyStep{}
+
+	ex := &executor.Executor{
+		Step:  step,
+		Store: st,
+		Queue: q,
+	}
+
+	in := pipeline.StepInput{JobID: "j_flaky", Page: 1}
+
+	if err := ex.Execute(ctx, in); err == nil {
+		t.Fatal("expected error on first execute, got nil")
+	}
+	if step.calls != 1 {
+		t.Fatalf("step calls after 1st delivery = %d, want 1", step.calls)
+	}
+
+	rec, err := st.GetStage(ctx, "j_flaky", 1, "line_ocr", "v1")
+	if err != nil {
+		t.Fatalf("get stage after 1st: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("stage record missing after MarkFailed")
+	}
+	if rec.Status != store.StageStatusFailed {
+		t.Fatalf("status after 1st = %q, want failed", rec.Status)
+	}
+	if rec.Error == "" {
+		t.Fatal("MarkFailed did not record an error message")
+	}
+
+	if err := ex.Execute(ctx, in); err != nil {
+		t.Fatalf("expected success on second execute, got %v", err)
+	}
+	if step.calls != 2 {
+		t.Fatalf("step calls after 2nd delivery = %d, want 2", step.calls)
+	}
+
+	rec, err = st.GetStage(ctx, "j_flaky", 1, "line_ocr", "v1")
+	if err != nil {
+		t.Fatalf("get stage after 2nd: %v", err)
+	}
+	if rec.Status != store.StageStatusSucceeded {
+		t.Fatalf("status after 2nd = %q, want succeeded", rec.Status)
+	}
+	if rec.ResultURI != "file://stub-result.json" {
+		t.Fatalf("ResultURI = %q, want file://stub-result.json", rec.ResultURI)
+	}
+}
+
 func TestExecutor_GeminiSucceededIsNotReRun(t *testing.T) {
 	ctx := context.Background()
 	objects := object.NewFileStore(t.TempDir())

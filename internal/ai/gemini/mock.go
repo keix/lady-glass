@@ -32,6 +32,13 @@ func (s *Mock) Run(ctx context.Context, in pipeline.StepInput) (pipeline.StepOut
 		return pipeline.StepOutput{}, err
 	}
 
+	usage := &pipeline.Usage{
+		Provider:     "mock",
+		Model:        "mock-gemini",
+		InputTokens:  10,
+		OutputTokens: 20,
+	}
+
 	return pipeline.StepOutput{
 		JobID:     in.JobID,
 		Page:      in.Page,
@@ -39,11 +46,6 @@ func (s *Mock) Run(ctx context.Context, in pipeline.StepInput) (pipeline.StepOut
 		Version:   s.Version(),
 		ResultURI: jsonURI,
 		JSONURI:   jsonURI,
-		Usage: &pipeline.Usage{
-			Provider:     "mock",
-			Model:        "mock-gemini",
-			InputTokens:  10,
-			OutputTokens: 20,
-		},
+		Usage:     usage,
 	}, nil
 }
