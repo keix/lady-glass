@@ -32,16 +32,16 @@ func (s *MemoryStore) GetStage(ctx context.Context, jobID string, page int, stag
 	return &cp, nil
 }
 
+// MarkRunning unconditionally overwrites the record with status=running.
+// The "do not downgrade from succeeded" invariant is enforced one layer
+// up by Executor.Execute via GetStage; this mirrors DynamoStore's
+// last-writer-wins PutItem semantics so the contract stays consistent
+// across backends. See the Store interface doc for the broader contract.
 func (s *MemoryStore) MarkRunning(ctx context.Context, in pipeline.StepInput) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	key := pipeline.StageKey(in.JobID, in.Page, in.Stage, in.Version)
-
-	if rec, ok := s.stages[key]; ok && rec.Status == StageStatusSucceeded {
-		return nil
-	}
-
 	s.stages[key] = &StageRecord{
 		JobID:          in.JobID,
 		Page:           in.Page,
