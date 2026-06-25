@@ -66,6 +66,7 @@ func (e *Executor) enqueueNext(ctx context.Context, in pipeline.StepInput, previ
 		Page:            in.Page,
 		Stage:           e.NextStage.Name,
 		Version:         e.NextStage.Version,
+		InputURI:        in.InputURI,
 		PreviousURI:     previousURI,
 		PromptProfileID: in.PromptProfileID,
 		Metadata:        in.Metadata,

@@ -82,6 +82,43 @@ func TestExecutor_EnqueueFailureRetriesWithoutReRunningStep(t *testing.T) {
 	}
 }
 
+func TestExecutor_NextStageMessageCarriesOriginalInputURI(t *testing.T) {
+	ctx := context.Background()
+	objects := object.NewFileStore(t.TempDir())
+	st := store.NewMemoryStore()
+	q := queue.NewMemoryQueue()
+
+	calls := 0
+	step := &lineocr.Mock{Objects: objects, Calls: &calls}
+
+	ex := &executor.Executor{
+		Step:      step,
+		NextStage: &pipeline.StageSpec{Name: "gemini", Version: "v1", QueueName: "gemini"},
+		Store:     st,
+		Queue:     q,
+	}
+
+	in := pipeline.StepInput{
+		JobID:    "j_propagate",
+		Page:     1,
+		InputURI: "s3://bkt/jobs/j_propagate/pages/000001/input.png",
+	}
+	if err := ex.Execute(ctx, in); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	msgs := q.Messages["gemini"]
+	if len(msgs) != 1 {
+		t.Fatalf("gemini messages = %d, want 1", len(msgs))
+	}
+	if got := msgs[0].InputURI; got != in.InputURI {
+		t.Fatalf("next InputURI = %q, want %q", got, in.InputURI)
+	}
+	if msgs[0].PreviousURI == "" {
+		t.Fatal("next PreviousURI should be set to the line_ocr ResultURI")
+	}
+}
+
 func TestExecutor_GeminiSucceededIsNotReRun(t *testing.T) {
 	ctx := context.Background()
 	objects := object.NewFileStore(t.TempDir())
