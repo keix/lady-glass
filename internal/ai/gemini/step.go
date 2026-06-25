@@ -70,6 +70,13 @@ func (s *Step) Run(ctx context.Context, in pipeline.StepInput) (pipeline.StepOut
 		return pipeline.StepOutput{}, fmt.Errorf("gemini: persist result: %w", err)
 	}
 
+	usage := &pipeline.Usage{
+		Provider:     "google_ai_studio",
+		Model:        out.Usage.Model,
+		InputTokens:  out.Usage.InputTokens,
+		OutputTokens: out.Usage.OutputTokens,
+	}
+
 	return pipeline.StepOutput{
 		JobID:     in.JobID,
 		Page:      in.Page,
@@ -77,12 +84,7 @@ func (s *Step) Run(ctx context.Context, in pipeline.StepInput) (pipeline.StepOut
 		Version:   s.Version(),
 		ResultURI: resultURI,
 		JSONURI:   resultURI,
-		Usage: &pipeline.Usage{
-			Provider:     "google_ai_studio",
-			Model:        out.Usage.Model,
-			InputTokens:  out.Usage.InputTokens,
-			OutputTokens: out.Usage.OutputTokens,
-		},
+		Usage:     usage,
 	}, nil
 }
 
