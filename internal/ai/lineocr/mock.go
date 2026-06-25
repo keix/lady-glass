@@ -43,7 +43,7 @@ func (s *Mock) Run(ctx context.Context, in pipeline.StepInput) (pipeline.StepOut
 		Version:   s.Version(),
 		ResultURI: resultURI,
 		TextURI:   textURI,
-		Usage: pipeline.Usage{
+		Usage: &pipeline.Usage{
 			Provider: "mock",
 			Model:    "mock-line-ocr",
 		},

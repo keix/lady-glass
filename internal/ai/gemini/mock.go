@@ -39,7 +39,7 @@ func (s *Mock) Run(ctx context.Context, in pipeline.StepInput) (pipeline.StepOut
 		Version:   s.Version(),
 		ResultURI: jsonURI,
 		JSONURI:   jsonURI,
-		Usage: pipeline.Usage{
+		Usage: &pipeline.Usage{
 			Provider:     "mock",
 			Model:        "mock-gemini",
 			InputTokens:  10,

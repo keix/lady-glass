@@ -20,7 +20,7 @@ type StepOutput struct {
 	ResultURI string            `json:"result_uri"`
 	TextURI   string            `json:"text_uri,omitempty"`
 	JSONURI   string            `json:"json_uri,omitempty"`
-	Usage     Usage             `json:"usage,omitempty"`
+	Usage     *Usage            `json:"usage,omitempty"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
