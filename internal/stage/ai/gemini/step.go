@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -10,16 +11,32 @@ import (
 	"github.com/keix/lady-glass/internal/pipeline"
 )
 
-// DefaultPrompt instructs Gemini to read a document page image and
-// return structured JSON. Step uses it when its Prompt field is empty.
-const DefaultPrompt = `You are extracting structured data from a single document page image.
-Return a JSON object with the following shape:
-  {
-    "text": "<the full transcribed text of the page>",
-    "fields": { ... any identifiable key/value pairs ... },
-    "tables": [ ... any tables present, as arrays of rows ... ]
-  }
-Respond with valid JSON only. Do not wrap it in markdown or explanatory prose.`
+// promptsFS embeds every prompt profile shipped with the Gemini stage.
+// Files live next to step.go under prompts/<profile_id>.txt; resolvePrompt
+// looks them up by id at runtime. The empty profile id ("") resolves to
+// "default" so callers that do not set StepInput.PromptProfileID get a
+// sensible baseline.
+//
+//go:embed prompts/*.txt
+var promptsFS embed.FS
+
+// DefaultPromptProfileID is the profile id used when StepInput's own
+// PromptProfileID is empty.
+const DefaultPromptProfileID = "default"
+
+// resolvePrompt loads the prompt body for the given profile id from the
+// embedded filesystem. Unknown profiles surface as a typed error so the
+// Step's Run can wrap them.
+func resolvePrompt(profileID string) (string, error) {
+	if profileID == "" {
+		profileID = DefaultPromptProfileID
+	}
+	body, err := promptsFS.ReadFile("prompts/" + profileID + ".txt")
+	if err != nil {
+		return "", fmt.Errorf("gemini: prompt profile %q not found: %w", profileID, err)
+	}
+	return string(body), nil
+}
 
 // Step is the production stage.Step backed by Gemini via Google AI Studio.
 // It fetches the page image from Objects, asks Client for multimodal
@@ -28,8 +45,10 @@ type Step struct {
 	Client  Client
 	Objects object.Store
 
-	// Prompt overrides the instructions sent to Gemini. Empty means use
-	// DefaultPrompt.
+	// Prompt overrides the instructions sent to Gemini. When non-empty,
+	// it wins over StepInput.PromptProfileID. Intended for tests and
+	// one-off hardcoded uses; production callers leave it empty and let
+	// the prompt come from the profile file.
 	Prompt string
 }
 
@@ -52,7 +71,10 @@ func (s *Step) Run(ctx context.Context, in pipeline.StepInput) (pipeline.StepOut
 
 	prompt := s.Prompt
 	if prompt == "" {
-		prompt = DefaultPrompt
+		prompt, err = resolvePrompt(in.PromptProfileID)
+		if err != nil {
+			return pipeline.StepOutput{}, err
+		}
 	}
 
 	out, err := s.Client.Extract(ctx, ExtractInput{
