@@ -109,6 +109,16 @@ This makes SQS redelivery, Lambda retry, and workflow retry safe: retries collap
 
 DynamoDB records are temporary execution state. Stage records, idempotency keys, and job events are written with TTL attributes; the retention window defines how long idempotency is guaranteed for completed jobs.
 
+### Retention
+
+Lady Glass is a workflow plane, not a system of record. Both DynamoDB rows and S3 artifacts age out after **14 days** (see [SPEC §S9](SPEC.md#s9-retention)) so the state store does not grow unboundedly.
+
+* Every `PutItem` written by `DynamoStore` sets `expires_at = now + 14d` (unix-epoch seconds). The DDB table's `TimeToLiveAttribute` is wired to this attribute; DynamoDB's TTL reaper deletes the row asynchronously (up to ~48h lag per the AWS docs), and `GetJob` / `GetStage` / `ListStagesByJob` also filter expired rows at read time so the lag is invisible to API callers.
+* The S3 artifact bucket carries a lifecycle rule that expires every object 14 days after creation (noncurrent versions one day later).
+* `GET /jobs/{id}` exposes `expires_at` (RFC3339) so the CLI shows operators when status / result calls will stop working.
+
+Bump `retentionDays` in `infra/cdk/stack.go` to change the window — the constant feeds the DDB attribute, the S3 lifecycle, and every Lambda's `LADY_GLASS_RETENTION_DAYS` env in lockstep.
+
 ### Execution modes
 
 Lady Glass supports two workflow modes selected per job at submission time.
@@ -152,7 +162,7 @@ POST /jobs                              open a job; returns a presigned upload U
 POST /jobs/{id}/start                   kick off the SFn workflow once uploaded
 GET  /jobs/{id}                         status snapshot with per-page counts
 GET  /jobs/{id}/result                  merged typed extraction (JSON)
-GET  /jobs/{id}/aggregate?merchant=X    matching transactions + JPY total
+GET  /jobs/{id}/aggregate?<filter>=<v>  single-dimension rollup (merchant=, foreign_currency=, …)
 ```
 
 The `lady-glass` CLI wraps these endpoints — see Local Development below.

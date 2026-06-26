@@ -129,6 +129,41 @@ Per-provider rate limits MUST be enforced inside the stage's own
 Lambda (via reserved concurrency or an in-Step rate limiter),
 never across stages.
 
+## S9. Retention
+
+Lady Glass is a workflow plane, not a system of record. Every
+StageRecord and JobRecord, and every per-page or merged artifact in
+the object store, MUST be treated as transient execution state with
+a bounded retention window.
+
+A conforming implementation MUST:
+
+- attach a per-item TTL attribute to every DynamoDB row it writes
+  (`expires_at`, unix-epoch seconds), driven by a single retention
+  window the operator can configure;
+- filter rows whose `expires_at` is in the past at read time
+  (`GetStage`, `GetJob`, `ListStagesByJob`), so the eventual-
+  consistency of DynamoDB's own TTL reaper is not observable
+  through the Store contract;
+- expire object-store artifacts on the same window via the bucket's
+  native lifecycle mechanism;
+- keep the DynamoDB TTL window and the object-store lifecycle
+  window in lockstep — the row and the artifact MUST become
+  unreadable in the same operator-visible time bound.
+
+The retention window MAY slide forward on any `PutItem` against the
+row: an active job's rows are kept alive while it is still being
+worked on, and the clock starts from the row's last transition
+(typically `Merge` for success and `MarkJobFailed` for failure).
+
+The retention contract is intentionally separate from idempotency
+(S5). Once a row expires, the idempotency guarantee on its key
+also lapses: a re-enqueue of the same `(jobID, page, stage,
+version)` after expiry MUST be treated as a new execution.
+
+A future revision MAY make the retention window negotiable per
+job (e.g. a "preserve until" header on `POST /jobs`).
+
 ---
 
 ## Conformance map (informative)
@@ -147,6 +182,7 @@ normative.
 | S6     | `internal/executor/executor.go` (`enqueueNext`) |
 | S7     | `internal/stage/step.go` (Step interface) + `internal/pipeline/types.go` (ChainSpec) |
 | S8     | `infra/cdk/stack.go` (one queue + one Lambda per stage), `internal/workflow/{check_pages,merge}.go` |
+| S9     | `internal/store/dynamodb.go` (`RetentionDays`, `expires_at` attribute, read-time filter), `infra/cdk/stack.go` (`TimeToLiveAttribute` + bucket `LifecycleRules`) |
 
 ---
 

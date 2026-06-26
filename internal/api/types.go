@@ -108,6 +108,13 @@ type JobStatusResponse struct {
 	// tracked separately in v0 — the JobRecord's first UpdatedAt
 	// stands in.
 	UpdatedAt string `json:"updated_at,omitempty"`
+
+	// ExpiresAt is the RFC3339 wall-clock time at which the job's
+	// DynamoDB row and S3 artifacts become eligible for deletion
+	// under the SPEC §S9 retention policy. Operators use it to
+	// know when status / result calls will stop working. Empty
+	// when the store has retention disabled.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // --- GET /jobs/{id}/result -------------------------------------------
@@ -131,28 +138,38 @@ type ResultPage struct {
 
 // --- GET /jobs/{id}/aggregate ----------------------------------------
 
-// AggregateRequest is the query-parameter shape (also valid as a
-// struct so the Go client can pass it programmatically; the HTTP
-// layer projects field tags to URL params).
-//
-// v0 supports a single filter — exact-match merchant — because the
-// primary target use case is "how much did I spend at X on this
-// statement". Date ranges and currency selection are deferred.
+// AggregateRequest names the single filter dimension to aggregate by.
+// FilterKey MUST match one of the JSON tags on pipeline.Transaction
+// (a string-typed field; e.g. "merchant", "foreign_currency",
+// "currency", "date"). FilterValue is the exact-match value. Exactly
+// one filter is applied per request; combining filters is not
+// supported in v0.
 type AggregateRequest struct {
-	Merchant string `json:"merchant,omitempty"`
+	FilterKey   string `json:"filter_key,omitempty"`
+	FilterValue string `json:"filter_value,omitempty"`
 }
 
 // AggregateResponse is the rollup the API computes by walking every
-// page's Transactions list and summing JPY amounts of rows whose
-// Merchant matches the filter. Designed for the credit-card-statement
-// use case where every line item has an amount in the primary currency
-// (JPY).
+// page's Transactions list and summing the matching rows. Total and
+// Currency are determined by the filter key:
+//
+//   - filter_key=foreign_currency → Total is ForeignAmount sum, Currency
+//     is the filter value (e.g. "MYR");
+//   - filter_key=currency         → Total is Amount sum, Currency is the
+//     filter value;
+//   - any other filter            → Total is Amount sum, Currency is "JPY"
+//     (the primary-currency assumption of the credit-card-statement
+//     use case).
+//
+// Total is a string so foreign-currency decimals ("1234.56") survive the
+// round-trip without float coercion at the JSON boundary.
 type AggregateResponse struct {
-	JobID    string    `json:"job_id"`
-	Merchant string    `json:"merchant"`
-	Count    int       `json:"count"`
-	TotalJPY int       `json:"total_jpy"`
-	Currency string    `json:"currency"`
+	JobID       string `json:"job_id"`
+	FilterKey   string `json:"filter_key"`
+	FilterValue string `json:"filter_value"`
+	Count       int    `json:"count"`
+	Total       string `json:"total"`
+	Currency    string `json:"currency"`
 
 	// Transactions are the matched rows (with page number attached)
 	// so the client can display the breakdown beside the totals.

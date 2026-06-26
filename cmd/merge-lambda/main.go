@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strconv"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -23,11 +24,16 @@ import (
 //
 //	LADY_GLASS_TABLE    DynamoDB table name
 //	LADY_GLASS_BUCKET   S3 bucket for artifacts
+//
+// Optional env (with defaults):
+//
+//	LADY_GLASS_RETENTION_DAYS   DDB TTL window (SPEC §S9)  (14)
 func main() {
 	ctx := context.Background()
 
 	table := mustEnv("LADY_GLASS_TABLE")
 	bucket := mustEnv("LADY_GLASS_BUCKET")
+	retentionDays := envIntDefault("LADY_GLASS_RETENTION_DAYS", 14)
 
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
@@ -35,6 +41,7 @@ func main() {
 	}
 
 	st := store.NewDynamoStore(dynamodb.NewFromConfig(cfg), table)
+	st.RetentionDays = retentionDays
 	obj := object.NewS3Store(s3.NewFromConfig(cfg), bucket)
 
 	awslambda.Start(func(ctx context.Context, in workflow.MergeInput) (workflow.MergeOutput, error) {
@@ -48,4 +55,16 @@ func mustEnv(key string) string {
 		log.Fatalf("env %s is required", key)
 	}
 	return v
+}
+
+func envIntDefault(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Fatalf("env %s must be int: %v", key, err)
+	}
+	return n
 }

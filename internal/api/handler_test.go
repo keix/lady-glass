@@ -297,6 +297,31 @@ func TestStatus_AggregatesPerPageCounts(t *testing.T) {
 	}
 }
 
+func TestStatus_ExposesExpiresAtAsRFC3339(t *testing.T) {
+	h, _, _ := newHandler(t)
+	ctx := context.Background()
+
+	// JobRecord.ExpiresAt is unix-epoch seconds (DDB TTL attribute);
+	// the API surface is RFC3339 so the CLI can display it.
+	expiry := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	if err := h.Store.PutJob(ctx, store.JobRecord{
+		JobID:     "job_exp",
+		Status:    store.JobStatusRunning,
+		ExpiresAt: expiry.Unix(),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	resp, _ := h.Handle(ctx, makeReq("GET", "/jobs/job_exp", "", nil))
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, resp.Body)
+	}
+	out := decode[api.JobStatusResponse](t, resp.Body)
+	if out.ExpiresAt != expiry.Format(time.RFC3339) {
+		t.Fatalf("expires_at = %q, want %q", out.ExpiresAt, expiry.Format(time.RFC3339))
+	}
+}
+
 // --- GET /jobs/{id}/result -------------------------------------------
 
 func seedSucceededWithMerged(t *testing.T, h *api.Handler, jobID string, merged workflow.MergedDocument) {
@@ -412,11 +437,14 @@ func TestAggregate_SumsMatchingMerchant(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, resp.Body)
 	}
 	out := decode[api.AggregateResponse](t, resp.Body)
+	if out.FilterKey != "merchant" || out.FilterValue != "ファミリーマート" {
+		t.Fatalf("filter echo = %q=%q", out.FilterKey, out.FilterValue)
+	}
 	if out.Count != 3 {
 		t.Fatalf("count = %d, want 3", out.Count)
 	}
-	if out.TotalJPY != 150+1680+401 {
-		t.Fatalf("total_jpy = %d, want %d", out.TotalJPY, 150+1680+401)
+	if out.Total != "2231" {
+		t.Fatalf("total = %q, want %q", out.Total, "2231")
 	}
 	if out.Currency != "JPY" {
 		t.Fatalf("currency = %q", out.Currency)
@@ -430,13 +458,80 @@ func TestAggregate_SumsMatchingMerchant(t *testing.T) {
 	}
 }
 
-func TestAggregate_RejectsMissingMerchant(t *testing.T) {
+func TestAggregate_SumsMatchingForeignCurrency(t *testing.T) {
+	h, _, _ := newHandler(t)
+
+	seedSucceededWithMerged(t, h, "job_fx", mergedFor("job_fx",
+		pipeline.PageExtractionResult{
+			DocumentType: pipeline.DocumentTypeCreditCardStatement,
+			Transactions: []pipeline.Transaction{
+				{Date: "26/06/14", Merchant: "GRAB", Amount: "604",
+					ForeignAmount: "14.73", ForeignCurrency: "MYR"},
+				{Date: "26/06/14", Merchant: "STARBUCKS", Amount: "500",
+					ForeignAmount: "3.50", ForeignCurrency: "USD"},
+				{Date: "26/06/13", Merchant: "ZUS", Amount: "377",
+					ForeignAmount: "9.20", ForeignCurrency: "MYR"},
+				{Date: "26/06/12", Merchant: "AMAZON",
+					Amount: "1,000"}, // JPY only — must not match
+			},
+		},
+	))
+
+	resp, _ := h.Handle(context.Background(),
+		makeReq("GET", "/jobs/job_fx/aggregate", "", map[string]string{"foreign_currency": "MYR"}))
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, resp.Body)
+	}
+	out := decode[api.AggregateResponse](t, resp.Body)
+	if out.FilterKey != "foreign_currency" || out.FilterValue != "MYR" {
+		t.Fatalf("filter echo = %q=%q", out.FilterKey, out.FilterValue)
+	}
+	if out.Count != 2 {
+		t.Fatalf("count = %d, want 2", out.Count)
+	}
+	// foreign_currency selects ForeignAmount as the summed value and
+	// the filter value as the response currency.
+	if out.Total != "23.93" {
+		t.Fatalf("total = %q, want %q", out.Total, "23.93")
+	}
+	if out.Currency != "MYR" {
+		t.Fatalf("currency = %q, want MYR", out.Currency)
+	}
+}
+
+func TestAggregate_RejectsMissingFilter(t *testing.T) {
 	h, _, _ := newHandler(t)
 	seedSucceededWithMerged(t, h, "job_a", mergedFor("job_a"))
 
 	resp, _ := h.Handle(context.Background(), makeReq("GET", "/jobs/job_a/aggregate", "", nil))
 	if resp.StatusCode != 400 {
 		t.Fatalf("status = %d", resp.StatusCode)
+	}
+}
+
+func TestAggregate_RejectsTwoFilters(t *testing.T) {
+	h, _, _ := newHandler(t)
+	seedSucceededWithMerged(t, h, "job_a", mergedFor("job_a"))
+
+	resp, _ := h.Handle(context.Background(),
+		makeReq("GET", "/jobs/job_a/aggregate", "", map[string]string{
+			"merchant":         "GRAB",
+			"foreign_currency": "MYR",
+		}))
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, resp.Body)
+	}
+}
+
+func TestAggregate_RejectsUnknownFilterKey(t *testing.T) {
+	h, _, _ := newHandler(t)
+	seedSucceededWithMerged(t, h, "job_a", mergedFor("job_a"))
+
+	resp, _ := h.Handle(context.Background(),
+		makeReq("GET", "/jobs/job_a/aggregate", "", map[string]string{"merchent": "GRAB"}))
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, resp.Body)
 	}
 }
 

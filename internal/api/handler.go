@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +20,30 @@ import (
 	"github.com/keix/lady-glass/internal/store"
 	"github.com/keix/lady-glass/internal/workflow"
 )
+
+// aggregateFilterFields maps each JSON tag on pipeline.Transaction's
+// string-typed fields to the corresponding Go field name. Built once at
+// package init by reflecting on the struct so the set of legal filter
+// keys stays in lockstep with the data contract — adding a new string
+// field to Transaction makes it filterable on the next compile, with
+// no second list to maintain. Non-string fields are skipped because the
+// exact-match comparison would not make sense for them.
+var aggregateFilterFields = func() map[string]string {
+	m := map[string]string{}
+	t := reflect.TypeOf(pipeline.Transaction{})
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Type.Kind() != reflect.String {
+			continue
+		}
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		if tag == "" || tag == "-" {
+			continue
+		}
+		m[tag] = f.Name
+	}
+	return m
+}()
 
 // Presigner abstracts S3 presigned URL generation so tests can swap a
 // fake without spinning up the SDK. The returned ExpiresAt is the
@@ -218,6 +244,9 @@ func (h *Handler) getStatus(ctx context.Context, _ events.APIGatewayV2HTTPReques
 		Error:     rec.Error,
 		UpdatedAt: rec.UpdatedAt,
 	}
+	if rec.ExpiresAt > 0 {
+		out.ExpiresAt = time.Unix(rec.ExpiresAt, 0).UTC().Format(time.RFC3339)
+	}
 	for _, s := range stages {
 		switch s.Status {
 		case store.StageStatusSucceeded:
@@ -265,47 +294,104 @@ func (h *Handler) getResult(ctx context.Context, _ events.APIGatewayV2HTTPReques
 // --- GET /jobs/{id}/aggregate ----------------------------------------
 
 func (h *Handler) aggregate(ctx context.Context, req events.APIGatewayV2HTTPRequest, jobID string) (events.APIGatewayV2HTTPResponse, error) {
-	merchant := strings.TrimSpace(req.QueryStringParameters["merchant"])
-	if merchant == "" {
-		return errorResponse(400, ErrCodeBadRequest, "merchant query parameter is required"), nil
-	}
-
-	merged, _, errResp := h.loadMerged(ctx, jobID)
+	key, value, errResp := resolveAggregateFilter(req.QueryStringParameters)
 	if errResp != nil {
 		return *errResp, nil
 	}
+	fieldName := aggregateFilterFields[key]
 
-	out := AggregateResponse{
-		JobID:    jobID,
-		Merchant: merchant,
-		Currency: "JPY",
+	merged, _, mErr := h.loadMerged(ctx, jobID)
+	if mErr != nil {
+		return *mErr, nil
 	}
 
+	// Source of the per-row amount depends on the filter dimension.
+	// foreign_currency narrows to rows settled in some non-primary
+	// currency, so the rollup is in that currency on ForeignAmount.
+	// Everything else (merchant, date, currency, …) rolls up on the
+	// primary Amount, which is JPY by default in this domain.
+	useForeign := key == "foreign_currency"
+
+	out := AggregateResponse{
+		JobID:       jobID,
+		FilterKey:   key,
+		FilterValue: value,
+	}
+	if useForeign {
+		out.Currency = value
+	} else if key == "currency" {
+		out.Currency = value
+	} else {
+		out.Currency = "JPY"
+	}
+
+	var total float64
 	for _, p := range merged.Pages {
 		var typed pipeline.PageExtractionResult
 		if err := json.Unmarshal(p.Result, &typed); err != nil {
 			return errorResponse(500, ErrCodeInternalError, fmt.Sprintf("decode page %d result: %v", p.Page, err)), nil
 		}
 		for _, tx := range typed.Transactions {
-			if tx.Merchant != merchant {
+			if reflect.ValueOf(tx).FieldByName(fieldName).String() != value {
 				continue
 			}
-			amt, err := parseAmountJPY(tx.Amount)
+			raw := tx.Amount
+			if useForeign {
+				raw = tx.ForeignAmount
+			}
+			amt, err := parseAmount(raw)
 			if err != nil {
 				// Skip un-parseable rows so a single bad row does not
 				// kill the whole aggregate.
 				continue
 			}
 			out.Count++
-			out.TotalJPY += amt
+			total += amt
 			out.Transactions = append(out.Transactions, AggregatedTransaction{
 				Transaction: tx,
 				Page:        p.Page,
 			})
 		}
 	}
+	out.Total = formatAmount(total, useForeign)
 
 	return jsonResponse(200, out), nil
+}
+
+// resolveAggregateFilter enforces "exactly one known, non-empty filter
+// query parameter". Unknown keys are rejected so a typo (e.g. "merchent")
+// surfaces as 400 instead of silently returning the empty rollup.
+func resolveAggregateFilter(params map[string]string) (string, string, *events.APIGatewayV2HTTPResponse) {
+	var picked, value string
+	for k, v := range params {
+		if _, ok := aggregateFilterFields[k]; !ok {
+			r := errorResponse(400, ErrCodeBadRequest, fmt.Sprintf("unknown filter %q; supported: %s", k, supportedFilterKeys()))
+			return "", "", &r
+		}
+		if strings.TrimSpace(v) == "" {
+			continue
+		}
+		if picked != "" {
+			r := errorResponse(400, ErrCodeBadRequest, fmt.Sprintf("only one filter allowed, got %q and %q", picked, k))
+			return "", "", &r
+		}
+		picked = k
+		value = strings.TrimSpace(v)
+	}
+	if picked == "" {
+		r := errorResponse(400, ErrCodeBadRequest, fmt.Sprintf("one filter query parameter is required; supported: %s", supportedFilterKeys()))
+		return "", "", &r
+	}
+	return picked, value, nil
+}
+
+func supportedFilterKeys() string {
+	keys := make([]string, 0, len(aggregateFilterFields))
+	for k := range aggregateFilterFields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }
 
 // --- Shared helpers --------------------------------------------------
@@ -415,10 +501,26 @@ func errorResponse(status int, code, message string) events.APIGatewayV2HTTPResp
 
 // --- misc helpers ----------------------------------------------------
 
-func parseAmountJPY(s string) (int, error) {
+// parseAmount strips group separators and parses the decimal Amount /
+// ForeignAmount strings into a float64. The source PDFs print amounts
+// with commas ("1,680", "16,387") and foreign currencies with two
+// decimals ("145.00", "5.50"); float64's ~15-digit mantissa is more
+// than enough for credit-card-statement magnitudes.
+func parseAmount(s string) (float64, error) {
 	s = strings.ReplaceAll(s, ",", "")
 	s = strings.TrimSpace(s)
-	return strconv.Atoi(s)
+	return strconv.ParseFloat(s, 64)
+}
+
+// formatAmount formats a summed amount back to a JSON-safe string.
+// Foreign-currency aggregates keep two decimal places so cents survive
+// the round-trip; primary-currency (JPY) aggregates are integer-valued
+// and emit without a decimal point.
+func formatAmount(v float64, foreign bool) string {
+	if foreign {
+		return strconv.FormatFloat(v, 'f', 2, 64)
+	}
+	return strconv.FormatFloat(v, 'f', 0, 64)
 }
 
 func contentTypeForExt(ext string) string {

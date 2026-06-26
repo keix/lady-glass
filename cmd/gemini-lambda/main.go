@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strconv"
 
 	awslambda "github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -32,6 +33,7 @@ import (
 // Optional env:
 //
 //	LADY_GLASS_GEMINI_MODEL       Gemini model (default: gemini-2.5-flash)
+//	LADY_GLASS_RETENTION_DAYS     DDB TTL window (SPEC §S9)        (14)
 func main() {
 	ctx := context.Background()
 
@@ -42,6 +44,7 @@ func main() {
 	if model == "" {
 		model = "gemini-2.5-flash"
 	}
+	retentionDays := envIntDefault("LADY_GLASS_RETENTION_DAYS", 14)
 
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
@@ -50,6 +53,7 @@ func main() {
 
 	objects := object.NewS3Store(s3.NewFromConfig(cfg), bucket)
 	st := store.NewDynamoStore(dynamodb.NewFromConfig(cfg), table)
+	st.RetentionDays = retentionDays
 
 	// Producing queue is unused (no NextStage) but stays wired so chain
 	// extensions only require an env entry.
@@ -77,4 +81,16 @@ func mustEnv(key string) string {
 		log.Fatalf("env %s is required", key)
 	}
 	return v
+}
+
+func envIntDefault(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Fatalf("env %s must be int: %v", key, err)
+	}
+	return n
 }

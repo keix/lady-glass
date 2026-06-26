@@ -61,7 +61,7 @@ func usage() {
 	fmt.Println("                                              upload + start a job")
 	fmt.Println("  lady-glass status <job_id> [--json]         poll job status")
 	fmt.Println("  lady-glass result <job_id>                  fetch merged extraction (JSON)")
-	fmt.Println("  lady-glass aggregate <job_id> --merchant X [--json]   merchant rollup")
+	fmt.Println("  lady-glass aggregate <job_id> --filter key=value [--json]   single-dimension rollup")
 	fmt.Println()
 	fmt.Println("Cloud commands read LADY_GLASS_API_URL and LADY_GLASS_API_TOKEN from .env or env.")
 	os.Exit(1)
@@ -371,6 +371,9 @@ func runStatus(ctx context.Context, args []string) {
 	if out.UpdatedAt != "" {
 		fmt.Printf("updated: %s\n", out.UpdatedAt)
 	}
+	if out.ExpiresAt != "" {
+		fmt.Printf("expires: %s\n", out.ExpiresAt)
+	}
 }
 
 // runResult fetches the typed merged result and pretty-prints it.
@@ -394,19 +397,25 @@ func runResult(ctx context.Context, args []string) {
 	printJSON(out)
 }
 
-// runAggregate filters transactions by merchant and prints the rollup.
+// runAggregate hits the aggregate endpoint with a single filter
+// dimension and prints the rollup.
 func runAggregate(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("aggregate", flag.ExitOnError)
-	merchant := fs.String("merchant", "", "exact-match merchant filter")
+	filter := fs.String("filter", "", "single filter as key=value (e.g. merchant=ファミマ, foreign_currency=MYR)")
 	jsonOut := fs.Bool("json", false, "emit JSON output")
 	_ = fs.Parse(args)
-	if fs.NArg() < 1 || *merchant == "" {
-		log.Fatal("usage: lady-glass aggregate <job_id> --merchant <name> [--json]")
+	if fs.NArg() < 1 || *filter == "" {
+		log.Fatal("usage: lady-glass aggregate <job_id> --filter key=value [--json]")
 	}
 	jobID := fs.Arg(0)
 
+	key, value, ok := strings.Cut(*filter, "=")
+	if !ok || key == "" || value == "" {
+		log.Fatalf("--filter must be key=value, got %q", *filter)
+	}
+
 	c := newAPIClient()
-	out, err := c.AggregateJob(ctx, jobID, api.AggregateRequest{Merchant: *merchant})
+	out, err := c.AggregateJob(ctx, jobID, api.AggregateRequest{FilterKey: key, FilterValue: value})
 	if err != nil {
 		var apiErr *client.Error
 		if errors.As(err, &apiErr) && apiErr.Code == api.ErrCodeJobNotReady {
@@ -420,13 +429,17 @@ func runAggregate(ctx context.Context, args []string) {
 		printJSON(out)
 		return
 	}
-	fmt.Printf("merchant: %s\n", out.Merchant)
+	fmt.Printf("filter:   %s=%s\n", out.FilterKey, out.FilterValue)
 	fmt.Printf("count:    %d\n", out.Count)
-	fmt.Printf("total:    %s 円\n", formatThousands(out.TotalJPY))
+	fmt.Printf("total:    %s %s\n", out.Total, out.Currency)
 	if len(out.Transactions) > 0 {
 		fmt.Println()
 		for _, tx := range out.Transactions {
-			fmt.Printf("  %s  p%d  %s  %s\n", tx.Date, tx.Page, tx.Merchant, tx.Amount)
+			amt := tx.Amount
+			if out.FilterKey == "foreign_currency" {
+				amt = tx.ForeignAmount
+			}
+			fmt.Printf("  %s  p%d  %s  %s\n", tx.Date, tx.Page, tx.Merchant, amt)
 		}
 	}
 }
@@ -444,25 +457,3 @@ func printJSON(v any) {
 	fmt.Print(buf.String())
 }
 
-// formatThousands inserts commas every three digits — "1234567" → "1,234,567".
-func formatThousands(n int) string {
-	s := fmt.Sprintf("%d", n)
-	if len(s) <= 3 {
-		return s
-	}
-	var b strings.Builder
-	first := len(s) % 3
-	if first > 0 {
-		b.WriteString(s[:first])
-		if len(s) > first {
-			b.WriteByte(',')
-		}
-	}
-	for i := first; i < len(s); i += 3 {
-		b.WriteString(s[i : i+3])
-		if i+3 < len(s) {
-			b.WriteByte(',')
-		}
-	}
-	return b.String()
-}

@@ -37,6 +37,7 @@ import (
 //	LADY_GLASS_FINAL_STAGE          final stage name              (gemini)
 //	LADY_GLASS_FINAL_VERSION        final stage version           (v1)
 //	LADY_GLASS_UPLOAD_EXPIRES_MIN   presigned PUT validity in min (15)
+//	LADY_GLASS_RETENTION_DAYS       DDB TTL window (SPEC §S9)      (14)
 func main() {
 	ctx := context.Background()
 
@@ -49,6 +50,7 @@ func main() {
 	finalStage := envDefault("LADY_GLASS_FINAL_STAGE", "gemini")
 	finalVersion := envDefault("LADY_GLASS_FINAL_VERSION", "v1")
 	uploadExpiresMin := envIntDefault("LADY_GLASS_UPLOAD_EXPIRES_MIN", 15)
+	retentionDays := envIntDefault("LADY_GLASS_RETENTION_DAYS", 14)
 
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
@@ -61,8 +63,11 @@ func main() {
 		bucket: bucket,
 	}
 
+	st := store.NewDynamoStore(dynamodb.NewFromConfig(cfg), table)
+	st.RetentionDays = retentionDays
+
 	handler := &api.Handler{
-		Store:           store.NewDynamoStore(dynamodb.NewFromConfig(cfg), table),
+		Store:           st,
 		Objects:         object.NewS3Store(s3Client, bucket),
 		Presigner:       presigner,
 		SFn:             &sdkSFn{client: sfn.NewFromConfig(cfg)},

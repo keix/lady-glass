@@ -137,6 +137,7 @@ func Merge(ctx context.Context, in MergeInput, st store.Store, obj object.Store)
 	}
 	if existing != nil {
 		job.InputURI = existing.InputURI
+		job.Mode = existing.Mode
 	}
 	if err := st.PutJob(ctx, job); err != nil {
 		return MergeOutput{}, fmt.Errorf("merge: put job: %w", err)

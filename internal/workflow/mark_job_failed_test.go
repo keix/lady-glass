@@ -17,6 +17,7 @@ func TestMarkJobFailed_FlipsStatusAndPreservesContext(t *testing.T) {
 		Status:    store.JobStatusRunning,
 		InputURI:  "s3://bkt/jobs/j_fail/input.pdf",
 		PageCount: 3,
+		Mode:      "rendered",
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -47,6 +48,9 @@ func TestMarkJobFailed_FlipsStatusAndPreservesContext(t *testing.T) {
 	}
 	if rec.PageCount != 3 {
 		t.Fatalf("PageCount lost: %d", rec.PageCount)
+	}
+	if rec.Mode != "rendered" {
+		t.Fatalf("Mode lost: %q", rec.Mode)
 	}
 }
 

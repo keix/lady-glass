@@ -28,13 +28,56 @@ type DynamoClient interface {
 // running the step. With Lambda reserved concurrency holding the worker
 // fleet small, the GetStage→MarkRunning race is acceptable for now; a
 // conditional-update lease can be layered in later (see design §8).
+//
+// RetentionDays (when non-zero) drives DynamoDB's per-item TTL via the
+// expires_at attribute (see SPEC §S9). Every Put computes
+// expires_at = now + RetentionDays * 86400 so a quiet job ages out
+// after the configured window from its last activity; an active job's
+// expiry slides forward on every transition. Get / List also filter
+// out rows whose expires_at has already passed, because DDB's TTL
+// reaper runs asynchronously (lag of up to 48h is documented) and the
+// API's "the row is gone" semantic must be strict.
 type DynamoStore struct {
 	Client DynamoClient
 	Table  string
+
+	// RetentionDays is the TTL window in days. Zero disables the TTL
+	// attribute (legacy / test path); set to e.g. 14 in production.
+	RetentionDays int
+
+	// Now is the time source for expires_at computation and read-time
+	// filtering. Defaults to time.Now when nil.
+	Now func() time.Time
 }
 
 func NewDynamoStore(client DynamoClient, table string) *DynamoStore {
 	return &DynamoStore{Client: client, Table: table}
+}
+
+func (s *DynamoStore) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+// expiresAt returns the unix-epoch second at which a row written now
+// should expire, or 0 when retention is disabled.
+func (s *DynamoStore) expiresAt() int64 {
+	if s.RetentionDays <= 0 {
+		return 0
+	}
+	return s.now().Add(time.Duration(s.RetentionDays) * 24 * time.Hour).Unix()
+}
+
+// expired reports whether the given expires_at (unix-epoch seconds) is
+// already in the past relative to the store's clock. Zero is treated as
+// "never expires" (legacy rows, in-memory paths).
+func (s *DynamoStore) expired(expiresAt int64) bool {
+	if expiresAt == 0 {
+		return false
+	}
+	return expiresAt <= s.now().Unix()
 }
 
 func (s *DynamoStore) GetStage(ctx context.Context, jobID string, page int, stage, version string) (*StageRecord, error) {
@@ -56,6 +99,9 @@ func (s *DynamoStore) GetStage(ctx context.Context, jobID string, page int, stag
 	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
 		return nil, fmt.Errorf("store: unmarshal stage: %w", err)
 	}
+	if s.expired(item.ExpiresAt) {
+		return nil, nil
+	}
 	rec := item.toRecord()
 	return &rec, nil
 }
@@ -72,6 +118,7 @@ func (s *DynamoStore) MarkRunning(ctx context.Context, in pipeline.StepInput) er
 		IdempotencyKey: pipeline.StageKey(in.JobID, in.Page, in.Stage, in.Version),
 		InputURI:       in.InputURI,
 		UpdatedAt:      nowRFC3339(),
+		ExpiresAt:      s.expiresAt(),
 	})
 }
 
@@ -88,6 +135,7 @@ func (s *DynamoStore) MarkSucceeded(ctx context.Context, out pipeline.StepOutput
 		ResultURI:      out.ResultURI,
 		NextStage:      nextStage,
 		UpdatedAt:      nowRFC3339(),
+		ExpiresAt:      s.expiresAt(),
 	})
 }
 
@@ -104,6 +152,7 @@ func (s *DynamoStore) MarkFailed(ctx context.Context, in pipeline.StepInput, run
 		InputURI:       in.InputURI,
 		Error:          runErr.Error(),
 		UpdatedAt:      nowRFC3339(),
+		ExpiresAt:      s.expiresAt(),
 	})
 }
 
@@ -140,6 +189,9 @@ func (s *DynamoStore) GetJob(ctx context.Context, jobID string) (*JobRecord, err
 	if err := attributevalue.UnmarshalMap(out.Item, &item); err != nil {
 		return nil, fmt.Errorf("store: unmarshal job: %w", err)
 	}
+	if s.expired(item.ExpiresAt) {
+		return nil, nil
+	}
 	rec := item.toRecord()
 	return &rec, nil
 }
@@ -156,6 +208,7 @@ func (s *DynamoStore) PutJob(ctx context.Context, rec JobRecord) error {
 		Mode:      rec.Mode,
 		Error:     rec.Error,
 		UpdatedAt: nowRFC3339(),
+		ExpiresAt: s.expiresAt(),
 	}
 
 	av, err := attributevalue.MarshalMap(item)
@@ -204,6 +257,9 @@ func (s *DynamoStore) ListStagesByJob(ctx context.Context, jobID string, stage s
 		if !endsWith(item.SK, suffix) {
 			continue
 		}
+		if s.expired(item.ExpiresAt) {
+			continue
+		}
 		out2 = append(out2, item.toRecord())
 	}
 	return out2, nil
@@ -234,6 +290,9 @@ type stageItem struct {
 	Error     string `dynamodbav:"error,omitempty"`
 
 	UpdatedAt string `dynamodbav:"updated_at"`
+	// ExpiresAt is the per-item TTL attribute (DDB TableProps wire
+	// expires_at as the TimeToLiveAttribute). Unix-epoch seconds.
+	ExpiresAt int64 `dynamodbav:"expires_at,omitempty"`
 }
 
 func (i stageItem) toRecord() StageRecord {
@@ -248,6 +307,7 @@ func (i stageItem) toRecord() StageRecord {
 		ResultURI:      i.ResultURI,
 		NextStage:      i.NextStage,
 		Error:          i.Error,
+		ExpiresAt:      i.ExpiresAt,
 	}
 }
 
@@ -267,6 +327,7 @@ type jobItem struct {
 	Error     string `dynamodbav:"error,omitempty"`
 
 	UpdatedAt string `dynamodbav:"updated_at"`
+	ExpiresAt int64  `dynamodbav:"expires_at,omitempty"`
 }
 
 func (i jobItem) toRecord() JobRecord {
@@ -279,6 +340,7 @@ func (i jobItem) toRecord() JobRecord {
 		Mode:      i.Mode,
 		Error:     i.Error,
 		UpdatedAt: i.UpdatedAt,
+		ExpiresAt: i.ExpiresAt,
 	}
 }
 
