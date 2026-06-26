@@ -87,6 +87,18 @@ OneDrive
 
 After import, the rest of the pipeline works with the stored artifact URI.
 
+### Current chain
+
+The shipped chain for credit-card statements is two stages:
+
+```text
+gemini/v1                   → multimodal extraction; emits PageExtractionResult
+normalize_card_statement/v1 → drops phantom schedule rows + zero-amount rows
+                              (see internal/stage/normalize/cardstatement)
+```
+
+`Merge` consumes `normalize_card_statement/v1` stage records (set via `LADY_GLASS_FINAL_STAGE` on the API Lambda). Adding a stage 3 — currency conversion, classification, summary — only costs one SQS queue, one Lambda, and one `addStage` call in `infra/cdk/stack.go` per [SPEC §S7](SPEC.md#s7-composition).
+
 ### Why split this way
 * **AI providers have different bottlenecks.** Each stage owns its own queue, so each Lambda sets its own reserved concurrency — a low-throughput provider cannot starve a high-throughput one.
 * **Idempotency belongs at the stage level.** `job_id + page + stage + version` is the key. A redelivered SQS message, a Lambda retry, or a Step Functions re-execution all collapse to the same "succeeded → skip" path in DynamoDB.
@@ -179,11 +191,6 @@ go run ./cmd/lady-glass dev
 ```
 
 The local runner uses mock AI stages and writes artifacts to `out/`.
-
-## Current Status
-Lady Glass is currently a work in progress.
-
-The local mock pipeline is implemented. Cloud adapters and real AI stages will be added incrementally.
 
 ## License
 Lady Glass is licensed under the MIT License.  
