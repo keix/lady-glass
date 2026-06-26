@@ -140,11 +140,13 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	})
 
 	// The normaliser is pure compute (S3 read + S3 write + DDB update)
-	// with no provider call, so it finishes in well under a second per
-	// page. The matching visibility timeout is still kept at ≥ Lambda
-	// timeout × ~1.5 — same rule as the Gemini queue.
+	// and finishes in well under a second per page, so a short VT would
+	// suit the workload. But Lambda's ESM requires VisibilityTimeout >=
+	// Function Timeout, and makeLambda hardcodes every Lambda at 300s,
+	// so 600s is the minimum that also satisfies the AWS guidance of
+	// VT >= LT × ~1.5 — same rule as the Gemini queue.
 	normalizeQueue := awssqs.NewQueue(stack, jsii.String("NormalizeCardStatementQueue"), &awssqs.QueueProps{
-		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(120)),
+		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(600)),
 		DeadLetterQueue: &awssqs.DeadLetterQueue{
 			Queue:           normalizeDLQ,
 			MaxReceiveCount: jsii.Number(5),
