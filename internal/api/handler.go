@@ -218,6 +218,9 @@ func (h *Handler) getStatus(ctx context.Context, _ events.APIGatewayV2HTTPReques
 		Error:     rec.Error,
 		UpdatedAt: rec.UpdatedAt,
 	}
+	if rec.ExpiresAt > 0 {
+		out.ExpiresAt = time.Unix(rec.ExpiresAt, 0).UTC().Format(time.RFC3339)
+	}
 	for _, s := range stages {
 		switch s.Status {
 		case store.StageStatusSucceeded:

@@ -297,6 +297,31 @@ func TestStatus_AggregatesPerPageCounts(t *testing.T) {
 	}
 }
 
+func TestStatus_ExposesExpiresAtAsRFC3339(t *testing.T) {
+	h, _, _ := newHandler(t)
+	ctx := context.Background()
+
+	// JobRecord.ExpiresAt is unix-epoch seconds (DDB TTL attribute);
+	// the API surface is RFC3339 so the CLI can display it.
+	expiry := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	if err := h.Store.PutJob(ctx, store.JobRecord{
+		JobID:     "job_exp",
+		Status:    store.JobStatusRunning,
+		ExpiresAt: expiry.Unix(),
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	resp, _ := h.Handle(ctx, makeReq("GET", "/jobs/job_exp", "", nil))
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, resp.Body)
+	}
+	out := decode[api.JobStatusResponse](t, resp.Body)
+	if out.ExpiresAt != expiry.Format(time.RFC3339) {
+		t.Fatalf("expires_at = %q, want %q", out.ExpiresAt, expiry.Format(time.RFC3339))
+	}
+}
+
 // --- GET /jobs/{id}/result -------------------------------------------
 
 func seedSucceededWithMerged(t *testing.T, h *api.Handler, jobID string, merged workflow.MergedDocument) {

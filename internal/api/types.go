@@ -108,6 +108,13 @@ type JobStatusResponse struct {
 	// tracked separately in v0 — the JobRecord's first UpdatedAt
 	// stands in.
 	UpdatedAt string `json:"updated_at,omitempty"`
+
+	// ExpiresAt is the RFC3339 wall-clock time at which the job's
+	// DynamoDB row and S3 artifacts become eligible for deletion
+	// under the SPEC §S9 retention policy. Operators use it to
+	// know when status / result calls will stop working. Empty
+	// when the store has retention disabled.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // --- GET /jobs/{id}/result -------------------------------------------
