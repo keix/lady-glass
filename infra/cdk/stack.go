@@ -58,6 +58,12 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	}
 	stack := awscdk.NewStack(scope, &id, &sprops)
 
+	// SPEC §S9 retention window. Single knob keeps DDB TTL, the S3
+	// lifecycle rule, and the Lambdas' DynamoStore.RetentionDays
+	// configuration in lockstep. Bump the constant to change all
+	// three at once.
+	retentionDays := jsii.String("14")
+
 	// --- Data plane ------------------------------------------------------
 
 	bucket := awss3.NewBucket(stack, jsii.String("ArtifactBucket"), &awss3.BucketProps{
@@ -68,6 +74,22 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		// In v0 stack teardowns we keep the data — operator can drain
 		// manually before destroy.
 		RemovalPolicy: awscdk.RemovalPolicy_RETAIN,
+		// SPEC §S9: per-job artifacts (source PDFs, per-page splits,
+		// per-page result JSONs, merged result JSONs) are execution
+		// state, not records of record. Expire them after 14 days so
+		// the bucket does not grow unboundedly. Noncurrent versions
+		// (from Versioned: true) expire one day later so a same-day
+		// overwrite stays recoverable for ~24h. The DDB row TTL is
+		// kept in lockstep at 14 days so DDB and S3 retire the job's
+		// state together.
+		LifecycleRules: &[]*awss3.LifecycleRule{
+			{
+				Id:                          jsii.String("expire-job-artifacts"),
+				Enabled:                     jsii.Bool(true),
+				Expiration:                  awscdk.Duration_Days(jsii.Number(14)),
+				NoncurrentVersionExpiration: awscdk.Duration_Days(jsii.Number(15)),
+			},
+		},
 	})
 
 	// --- Control plane ---------------------------------------------------
@@ -86,6 +108,13 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		// is measurable.
 		BillingMode:   awsdynamodb.BillingMode_PAY_PER_REQUEST,
 		RemovalPolicy: awscdk.RemovalPolicy_RETAIN,
+		// SPEC §S9: per-item TTL drives DDB to delete expired job /
+		// stage rows. DynamoStore writes the unix-epoch second under
+		// "expires_at" on every Put (see internal/store/dynamodb.go
+		// RetentionDays). DDB's TTL reaper is asynchronous (up to ~48h
+		// lag is documented); the store layer also filters expired
+		// rows at read time so the lag is invisible to callers.
+		TimeToLiveAttribute: jsii.String("expires_at"),
 	})
 
 	// --- Stage queue + DLQ ----------------------------------------------
@@ -180,9 +209,10 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	// envelope for gemini-2.5-flash; adjust per the deployed key's
 	// quota. Each future stage gets its own stageRuntimeProps value.
 	geminiLambda := addStage("GeminiLambda", "gemini-lambda", geminiQueue, &map[string]*string{
-		"LADY_GLASS_TABLE":          table.TableName(),
-		"LADY_GLASS_BUCKET":         bucket.BucketName(),
-		"LADY_GLASS_GEMINI_API_KEY": geminiAPIKey,
+		"LADY_GLASS_TABLE":           table.TableName(),
+		"LADY_GLASS_BUCKET":          bucket.BucketName(),
+		"LADY_GLASS_GEMINI_API_KEY":  geminiAPIKey,
+		"LADY_GLASS_RETENTION_DAYS":  retentionDays,
 	}, stageRuntimeProps{
 		ReservedConcurrency: 10,
 		BatchSize:           1,
@@ -195,26 +225,32 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	// --- Workflow Lambdas ------------------------------------------------
 
 	submitPages := makeLambda("SubmitPagesLambda", "submit-pages-lambda", &map[string]*string{
-		"LADY_GLASS_TABLE":        table.TableName(),
-		"LADY_GLASS_QUEUE_GEMINI": geminiQueue.QueueUrl(),
+		"LADY_GLASS_TABLE":          table.TableName(),
+		"LADY_GLASS_QUEUE_GEMINI":   geminiQueue.QueueUrl(),
+		"LADY_GLASS_RETENTION_DAYS": retentionDays,
 	})
 	table.GrantReadWriteData(submitPages)
 	geminiQueue.GrantSendMessages(submitPages)
 
+	// check-pages is read-only; the read-time filter on DynamoStore
+	// already excludes expired rows regardless of the reader's
+	// RetentionDays, so this Lambda does not need the env.
 	checkPages := makeLambda("CheckPagesLambda", "check-pages-lambda", &map[string]*string{
 		"LADY_GLASS_TABLE": table.TableName(),
 	})
 	table.GrantReadData(checkPages)
 
 	merge := makeLambda("MergeLambda", "merge-lambda", &map[string]*string{
-		"LADY_GLASS_TABLE":  table.TableName(),
-		"LADY_GLASS_BUCKET": bucket.BucketName(),
+		"LADY_GLASS_TABLE":          table.TableName(),
+		"LADY_GLASS_BUCKET":         bucket.BucketName(),
+		"LADY_GLASS_RETENTION_DAYS": retentionDays,
 	})
 	table.GrantReadWriteData(merge)
 	bucket.GrantReadWrite(merge, nil)
 
 	markFailed := makeLambda("MarkJobFailedLambda", "mark-job-failed-lambda", &map[string]*string{
-		"LADY_GLASS_TABLE": table.TableName(),
+		"LADY_GLASS_TABLE":          table.TableName(),
+		"LADY_GLASS_RETENTION_DAYS": retentionDays,
 	})
 	table.GrantReadWriteData(markFailed)
 
@@ -265,14 +301,15 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	)
 
 	apiLambda := makeLambda("ApiLambda", "api-lambda", &map[string]*string{
-		"LADY_GLASS_TABLE":             table.TableName(),
-		"LADY_GLASS_BUCKET":            bucket.BucketName(),
-		"LADY_GLASS_STATE_MACHINE_ARN": stateMachine.StateMachineArn(),
-		"LADY_GLASS_API_KEY":           apiKey,
-		"LADY_GLASS_FIRST_QUEUE":       jsii.String("gemini"),
-		"LADY_GLASS_FINAL_STAGE":       jsii.String("gemini"),
-		"LADY_GLASS_FINAL_VERSION":     jsii.String("v1"),
+		"LADY_GLASS_TABLE":              table.TableName(),
+		"LADY_GLASS_BUCKET":             bucket.BucketName(),
+		"LADY_GLASS_STATE_MACHINE_ARN":  stateMachine.StateMachineArn(),
+		"LADY_GLASS_API_KEY":            apiKey,
+		"LADY_GLASS_FIRST_QUEUE":        jsii.String("gemini"),
+		"LADY_GLASS_FINAL_STAGE":        jsii.String("gemini"),
+		"LADY_GLASS_FINAL_VERSION":      jsii.String("v1"),
 		"LADY_GLASS_UPLOAD_EXPIRES_MIN": jsii.String("15"),
+		"LADY_GLASS_RETENTION_DAYS":     retentionDays,
 	})
 	table.GrantReadWriteData(apiLambda)
 	bucket.GrantReadWrite(apiLambda, nil)
