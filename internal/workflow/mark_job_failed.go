@@ -46,6 +46,7 @@ func MarkJobFailed(ctx context.Context, in MarkJobFailedInput, st store.Store) (
 	if existing != nil {
 		job.InputURI = existing.InputURI
 		job.PageCount = existing.PageCount
+		job.Mode = existing.Mode
 	}
 	if err := st.PutJob(ctx, job); err != nil {
 		return MarkJobFailedOutput{}, fmt.Errorf("mark_job_failed: put job: %w", err)

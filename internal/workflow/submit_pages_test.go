@@ -86,6 +86,38 @@ func TestSubmitPages_RecordsJobRunningWithPageCount(t *testing.T) {
 	}
 }
 
+func TestSubmitPages_PreservesModeFromExistingJob(t *testing.T) {
+	st := store.NewMemoryStore()
+	q := queue.NewMemoryQueue()
+	ctx := context.Background()
+
+	if err := st.PutJob(ctx, store.JobRecord{
+		JobID:    "j_rendered",
+		Status:   store.JobStatusCreated,
+		Mode:     "rendered",
+		InputURI: "s3://bkt/jobs/j_rendered/input.pdf",
+	}); err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+
+	if _, err := workflow.SubmitPages(ctx, workflow.SubmitPagesInput{
+		JobID:      "j_rendered",
+		InputURI:   "s3://bkt/jobs/j_rendered/input.pdf",
+		FirstQueue: "gemini",
+		Pages:      []string{"page-1.pdf"},
+	}, st, q); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	rec, err := st.GetJob(ctx, "j_rendered")
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if rec.Mode != "rendered" {
+		t.Fatalf("mode = %q, want rendered", rec.Mode)
+	}
+}
+
 func TestSubmitPages_QueueErrorIsReturned(t *testing.T) {
 	st := store.NewMemoryStore()
 

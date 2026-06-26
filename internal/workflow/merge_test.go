@@ -48,6 +48,7 @@ func TestMerge_WritesMergedDocumentAndUpdatesJob(t *testing.T) {
 		Status:    store.JobStatusRunning,
 		InputURI:  "s3://bkt/jobs/j_merge/input.pdf",
 		PageCount: 3,
+		Mode:      "rendered",
 	}); err != nil {
 		t.Fatalf("seed job: %v", err)
 	}
@@ -111,6 +112,9 @@ func TestMerge_WritesMergedDocumentAndUpdatesJob(t *testing.T) {
 	}
 	if rec.InputURI != "s3://bkt/jobs/j_merge/input.pdf" {
 		t.Fatalf("InputURI was lost from JobRecord: %q", rec.InputURI)
+	}
+	if rec.Mode != "rendered" {
+		t.Fatalf("Mode was lost from JobRecord: %q", rec.Mode)
 	}
 }
 
@@ -204,5 +208,34 @@ func TestMerge_PreservesInputURIFromExistingJob(t *testing.T) {
 	}
 	if rec.InputURI != "s3://bkt/jobs/j_keep/source.pdf" {
 		t.Fatalf("input_uri was not preserved through Merge: %q", rec.InputURI)
+	}
+}
+
+func TestMerge_PreservesModeFromExistingJob(t *testing.T) {
+	st := store.NewMemoryStore()
+	obj := object.NewFileStore(t.TempDir())
+	ctx := context.Background()
+
+	if err := st.PutJob(ctx, store.JobRecord{
+		JobID:  "j_mode",
+		Status: store.JobStatusRunning,
+		Mode:   "rendered",
+	}); err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+	seedSucceededPage(t, st, obj, "j_mode", 1, map[string]any{"text": "x"})
+
+	if _, err := workflow.Merge(ctx, workflow.MergeInput{
+		JobID: "j_mode", PageCount: 1, FinalStage: "gemini", FinalVersion: "v1",
+	}, st, obj); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	rec, err := st.GetJob(ctx, "j_mode")
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if rec.Mode != "rendered" {
+		t.Fatalf("mode was not preserved through Merge: %q", rec.Mode)
 	}
 }

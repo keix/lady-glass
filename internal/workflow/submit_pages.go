@@ -53,12 +53,21 @@ func SubmitPages(ctx context.Context, in SubmitPagesInput, st store.Store, q que
 
 	pageCount := len(in.Pages)
 
-	if err := st.PutJob(ctx, store.JobRecord{
+	existing, err := st.GetJob(ctx, in.JobID)
+	if err != nil {
+		return SubmitPagesOutput{}, fmt.Errorf("submit_pages: get job: %w", err)
+	}
+
+	job := store.JobRecord{
 		JobID:     in.JobID,
 		Status:    store.JobStatusRunning,
 		InputURI:  in.InputURI,
 		PageCount: pageCount,
-	}); err != nil {
+	}
+	if existing != nil {
+		job.Mode = existing.Mode
+	}
+	if err := st.PutJob(ctx, job); err != nil {
 		return SubmitPagesOutput{}, fmt.Errorf("submit_pages: put job: %w", err)
 	}
 
