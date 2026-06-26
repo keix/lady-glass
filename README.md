@@ -66,10 +66,9 @@ Step Functions owns the document workflow. SQS and Lambda own the per-page AI st
 | API Gateway    | Job control: upload URLs, execution start, status, and results   |
 
 
-### Every document operation in Lady Glass is a stage
-A stage is a small unit of document processing. It may import a document, render pages, call OCR or AI, run a local transform, validate output, or merge results.
+### Document workflow and page stages
 
-Step Functions manages the execution of the document workflow. SQS and Lambda execute page-level stages, while DynamoDB records state and idempotency.
+Document-level operations such as render, submit, check, and merge are managed by Step Functions. Page-level stages such as AI extraction and normalization are executed by SQS and Lambda. DynamoDB records state and idempotency for both layers.
 
 ### Sources
 Lady Glass can import documents from multiple sources.
@@ -97,7 +96,12 @@ normalize_card_statement/v1 → drops phantom schedule rows + zero-amount rows
                               (see internal/stage/normalize/cardstatement)
 ```
 
-`Merge` consumes `normalize_card_statement/v1` stage records (set via `LADY_GLASS_FINAL_STAGE` on the API Lambda). Adding a stage 3 — currency conversion, classification, summary — only costs one SQS queue, one Lambda, and one `addStage` call in `infra/cdk/stack.go` per [SPEC §S7](SPEC.md#s7-composition).
+### Chain binding
+A job is bound to the chain it was created with. The resolved `ChainSpec` is frozen onto the `JobRecord` ([SPEC §S10](SPEC.md#s10-chain-binding)), so new deployments can add or promote chains without disturbing in-flight jobs.
+
+Old chain resources are kept for one retention window before removal — drain is the same 14-day window as everything else ([SPEC §S9](SPEC.md#s9-retention)).
+
+Adding a stage to the *same* chain (currency conversion, classification, summary in the credit-card-statement chain) still costs only one SQS queue, one Lambda, and one `addStage` call per [SPEC §S7](SPEC.md#s7-composition).
 
 ### Why split this way
 * **AI providers have different bottlenecks.** Each stage owns its own queue, so each Lambda sets its own reserved concurrency — a low-throughput provider cannot starve a high-throughput one.
@@ -123,13 +127,7 @@ DynamoDB records are temporary execution state. Stage records, idempotency keys,
 
 ### Retention
 
-Lady Glass is a workflow plane, not a system of record. Both DynamoDB rows and S3 artifacts age out after **14 days** (see [SPEC §S9](SPEC.md#s9-retention)) so the state store does not grow unboundedly.
-
-* Every `PutItem` written by `DynamoStore` sets `expires_at = now + 14d` (unix-epoch seconds). The DDB table's `TimeToLiveAttribute` is wired to this attribute; DynamoDB's TTL reaper deletes the row asynchronously (up to ~48h lag per the AWS docs), and `GetJob` / `GetStage` / `ListStagesByJob` also filter expired rows at read time so the lag is invisible to API callers.
-* The S3 artifact bucket carries a lifecycle rule that expires every object 14 days after creation (noncurrent versions one day later).
-* `GET /jobs/{id}` exposes `expires_at` (RFC3339) so the CLI shows operators when status / result calls will stop working.
-
-Bump `retentionDays` in `infra/cdk/stack.go` to change the window — the constant feeds the DDB attribute, the S3 lifecycle, and every Lambda's `LADY_GLASS_RETENTION_DAYS` env in lockstep.
+Lady Glass is a workflow plane, not a system of record. DynamoDB rows and S3 artifacts expire after **14 days** ([SPEC §S9](SPEC.md#s9-retention)). The same window is used for stage idempotency, job state, artifacts, and chain-drain safety.
 
 ### Execution modes
 
