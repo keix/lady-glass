@@ -30,7 +30,7 @@
         "job_id.$": "$.job_id",
         "input_uri.$": "$.input_uri",
         "pages.$": "$.render_result.pages",
-        "first_queue.$": "$.first_queue"
+        "chain.$": "$.chain"
       },
       "ResultPath": "$.submit_result",
       "Next": "WaitForPages"
@@ -42,7 +42,7 @@
         "job_id.$": "$.job_id",
         "input_uri.$": "$.input_uri",
         "pages.$": "$.pages",
-        "first_queue.$": "$.first_queue"
+        "chain.$": "$.chain"
       },
       "ResultPath": "$.submit_result",
       "Next": "WaitForPages"
