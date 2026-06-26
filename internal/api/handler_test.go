@@ -183,6 +183,69 @@ func TestStartJob_KicksSFnExecution(t *testing.T) {
 	}
 }
 
+func TestCreateAndStartJob_ModeRoundTripsThroughSFnInput(t *testing.T) {
+	h, _, sf := newHandler(t)
+	ctx := context.Background()
+
+	// 1. Create a job in rendered mode.
+	createBody, _ := json.Marshal(api.CreateJobRequest{
+		Filename: "smbc.pdf",
+		Mode:     api.ModeRendered,
+	})
+	resp, _ := h.Handle(ctx, makeReq("POST", "/jobs", string(createBody), nil))
+	if resp.StatusCode != 200 {
+		t.Fatalf("create: status = %d, body = %s", resp.StatusCode, resp.Body)
+	}
+	created := decode[api.CreateJobResponse](t, resp.Body)
+
+	// JobRecord persisted with mode=rendered.
+	rec, err := h.Store.GetJob(ctx, created.JobID)
+	if err != nil || rec == nil {
+		t.Fatalf("get job after create: %v", err)
+	}
+	if rec.Mode != string(api.ModeRendered) {
+		t.Fatalf("persisted mode = %q, want rendered", rec.Mode)
+	}
+
+	// 2. Start the job and verify the SFn input carries the mode.
+	resp, _ = h.Handle(ctx, makeReq("POST", "/jobs/"+created.JobID+"/start", "", nil))
+	if resp.StatusCode != 200 {
+		t.Fatalf("start: status = %d, body = %s", resp.StatusCode, resp.Body)
+	}
+
+	var sfnInput map[string]any
+	if err := json.Unmarshal([]byte(sf.lastInput), &sfnInput); err != nil {
+		t.Fatalf("decode sfn input: %v", err)
+	}
+	if sfnInput["mode"] != string(api.ModeRendered) {
+		t.Fatalf("sfn input mode = %v, want rendered", sfnInput["mode"])
+	}
+}
+
+func TestCreateJob_DefaultsToPassthrough(t *testing.T) {
+	h, _, sf := newHandler(t)
+	ctx := context.Background()
+
+	createBody, _ := json.Marshal(api.CreateJobRequest{Filename: "tiny.pdf"})
+	resp, _ := h.Handle(ctx, makeReq("POST", "/jobs", string(createBody), nil))
+	created := decode[api.CreateJobResponse](t, resp.Body)
+
+	rec, _ := h.Store.GetJob(ctx, created.JobID)
+	if rec.Mode != string(api.ModePassthrough) {
+		t.Fatalf("default mode persisted as %q, want passthrough", rec.Mode)
+	}
+
+	resp, _ = h.Handle(ctx, makeReq("POST", "/jobs/"+created.JobID+"/start", "", nil))
+	if resp.StatusCode != 200 {
+		t.Fatalf("start: %s", resp.Body)
+	}
+	var sfnInput map[string]any
+	_ = json.Unmarshal([]byte(sf.lastInput), &sfnInput)
+	if sfnInput["mode"] != string(api.ModePassthrough) {
+		t.Fatalf("sfn input mode = %v, want passthrough", sfnInput["mode"])
+	}
+}
+
 func TestStartJob_RejectsMissingJob(t *testing.T) {
 	h, _, _ := newHandler(t)
 	resp, _ := h.Handle(context.Background(), makeReq("POST", "/jobs/missing/start", "", nil))

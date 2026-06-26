@@ -218,6 +218,11 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	})
 	table.GrantReadWriteData(markFailed)
 
+	renderPages := makeLambda("RenderPagesLambda", "render-pages-lambda", &map[string]*string{
+		"LADY_GLASS_BUCKET": bucket.BucketName(),
+	})
+	bucket.GrantReadWrite(renderPages, nil)
+
 	// --- Step Functions state machine ------------------------------------
 
 	// The ASL ships in the repo at ../state_machine.asl.json. Loading it
@@ -235,6 +240,7 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 			"CheckPagesLambdaArn":    checkPages.FunctionArn(),
 			"MergeLambdaArn":         merge.FunctionArn(),
 			"MarkJobFailedLambdaArn": markFailed.FunctionArn(),
+			"RenderPagesLambdaArn":   renderPages.FunctionArn(),
 		},
 	})
 
@@ -245,6 +251,7 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	checkPages.GrantInvoke(stateMachine)
 	merge.GrantInvoke(stateMachine)
 	markFailed.GrantInvoke(stateMachine)
+	renderPages.GrantInvoke(stateMachine)
 
 	// --- API Lambda + HTTP API -------------------------------------------
 

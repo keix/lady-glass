@@ -121,10 +121,16 @@ func (h *Handler) createJob(ctx context.Context, req events.APIGatewayV2HTTPRequ
 		return errorResponse(500, ErrCodeInternalError, fmt.Sprintf("presign: %v", err)), nil
 	}
 
+	mode := in.Mode
+	if mode == "" {
+		mode = ModePassthrough
+	}
+
 	if err := h.Store.PutJob(ctx, store.JobRecord{
 		JobID:    jobID,
 		Status:   store.JobStatusCreated,
 		InputURI: fmt.Sprintf("s3://%s/%s", h.Bucket, key),
+		Mode:     string(mode),
 	}); err != nil {
 		return errorResponse(500, ErrCodeInternalError, fmt.Sprintf("put job: %v", err)), nil
 	}
@@ -154,10 +160,20 @@ func (h *Handler) startJob(ctx context.Context, _ events.APIGatewayV2HTTPRequest
 		return errorResponse(400, ErrCodeBadRequest, "job has no input_uri; was the document uploaded?"), nil
 	}
 
+	mode := rec.Mode
+	if mode == "" {
+		mode = string(ModePassthrough)
+	}
+
+	// pages is only consumed on the passthrough branch (the rendered
+	// branch projects $.render_result.pages instead); send the source
+	// URI as a single-element placeholder so the ModeChoice can
+	// resolve either way.
 	execInput, err := json.Marshal(map[string]any{
 		"job_id":        jobID,
 		"input_uri":     rec.InputURI,
 		"pages":         []string{rec.InputURI},
+		"mode":          mode,
 		"first_queue":   h.FirstQueue,
 		"final_stage":   h.FinalStage,
 		"final_version": h.FinalVersion,

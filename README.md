@@ -19,15 +19,15 @@ flowchart TB
 
     subgraph SFN["Step Functions"]
         direction TB
-        StartExec --> RenderPages
-        RenderPages --> SubmitPages
+        StartExec --> SubmitPages
         SubmitPages --> WaitLoop[Wait]
         WaitLoop --> CheckPages
         CheckPages --> Choice{job status?}
         Choice -- pending --> WaitLoop
         Choice -- failed --> MarkFailed[MarkJobFailed]
         Choice -- succeeded --> Merge
-        Merge --> MarkSucceeded[MarkJobSucceeded]
+        MarkFailed --> Done([End])
+        Merge --> Done
     end
 
     subgraph CHAIN["SQS + Lambda"]
@@ -92,6 +92,19 @@ After import, the rest of the pipeline works with the stored artifact URI.
 * **Idempotency belongs at the stage level.** `job_id + page + stage + version` is the key. A redelivered SQS message, a Lambda retry, or a Step Functions re-execution all collapse to the same "succeeded → skip" path in DynamoDB.
 * **Step Functions does not chain AI steps.** Page-level retry and ack stay inside SQS so workflow state transitions don't multiply with page count, and so external API limits don't leak into the workflow.
 * **CheckPages is read-only.** It polls DynamoDB and either keeps waiting, merges, or fails the job. No work happens inside the workflow itself beyond orchestration.
+
+### Execution modes
+
+Lady Glass supports two workflow modes selected per job at submission time.
+
+In **passthrough** mode, the source PDF is sent to the AI stage as a single document input. Cheapest path, ideal for short PDFs (≤ ~5 pages) and images.
+
+In **rendered** mode, a document-level RenderPages step splits the PDF into one-page PDFs first. SubmitPages then fans out one message per page to SQS, so the AI stage runs N times in parallel — true per-page parallelism, retry, and idempotency.
+
+```bash
+lady-glass submit ./statement.pdf                       # passthrough (default)
+lady-glass submit ./long_report.pdf --mode rendered     # per-page split
+```
 
 ## AWS Deploy
 Lady Glass infrastructure is defined with AWS CDK.

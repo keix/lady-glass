@@ -1,7 +1,40 @@
 {
-  "Comment": "Lady Glass document-level workflow. Step Functions orchestrates SubmitPages -> Wait -> CheckPages -> Choice -> Merge / MarkJobFailed. Per-page AI work happens entirely inside the SQS+Lambda chain, not in this state machine.",
-  "StartAt": "SubmitPages",
+  "Comment": "Lady Glass document-level workflow. Step Functions orchestrates SubmitPages -> Wait -> CheckPages -> Choice -> Merge / MarkJobFailed. The optional RenderPages branch splits PDFs into per-page PDFs before SubmitPages when input.mode == 'rendered'. Per-page AI work happens entirely inside the SQS+Lambda chain, not in this state machine.",
+  "StartAt": "ModeChoice",
   "States": {
+    "ModeChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.mode",
+          "StringEquals": "rendered",
+          "Next": "RenderPages"
+        }
+      ],
+      "Default": "SubmitPages"
+    },
+    "RenderPages": {
+      "Type": "Task",
+      "Resource": "${RenderPagesLambdaArn}",
+      "Parameters": {
+        "job_id.$": "$.job_id",
+        "input_uri.$": "$.input_uri"
+      },
+      "ResultPath": "$.render_result",
+      "Next": "SubmitPagesAfterRender"
+    },
+    "SubmitPagesAfterRender": {
+      "Type": "Task",
+      "Resource": "${SubmitPagesLambdaArn}",
+      "Parameters": {
+        "job_id.$": "$.job_id",
+        "input_uri.$": "$.input_uri",
+        "pages.$": "$.render_result.pages",
+        "first_queue.$": "$.first_queue"
+      },
+      "ResultPath": "$.submit_result",
+      "Next": "WaitForPages"
+    },
     "SubmitPages": {
       "Type": "Task",
       "Resource": "${SubmitPagesLambdaArn}",

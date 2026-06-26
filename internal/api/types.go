@@ -11,6 +11,24 @@ import (
 
 // --- POST /jobs ------------------------------------------------------
 
+// Mode selects how the SFN workflow processes the uploaded document.
+//
+//   - ModePassthrough sends the source document straight to the AI
+//     stage as a single page. Cheapest path, ideal for short PDFs
+//     (≤ ~5 pages) and images.
+//   - ModeRendered runs a RenderPages step first that splits a PDF
+//     into one-page PDFs, then SubmitPages fans out N messages to
+//     the stage chain — true per-page parallelism, retry, and
+//     idempotency.
+//
+// Default when omitted is ModePassthrough.
+type Mode string
+
+const (
+	ModePassthrough Mode = "passthrough"
+	ModeRendered    Mode = "rendered"
+)
+
 // CreateJobRequest opens a new job slot and asks for a presigned PUT
 // URL so the client can upload the source document directly to S3
 // without round-tripping through the API Lambda (avoiding the 6 MB
@@ -25,6 +43,9 @@ type CreateJobRequest struct {
 	// the server derives a default from the filename extension when
 	// empty.
 	ContentType string `json:"content_type,omitempty"`
+
+	// Mode selects the workflow shape. Empty = passthrough.
+	Mode Mode `json:"mode,omitempty"`
 }
 
 // CreateJobResponse hands the client a presigned URL and the server-

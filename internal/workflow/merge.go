@@ -49,15 +49,31 @@ type MergedPage struct {
 // to the object store, and updates the JobRecord with status=succeeded
 // and the merged URI as ResultURI.
 //
-// It is the workflow's success terminal: by the time Merge runs,
-// CheckPages has already returned CheckPagesStatusSucceeded for the
-// same input, so every page is expected to have a non-empty stage
-// record with status=succeeded and a populated ResultURI. Missing rows
-// or empty ResultURIs are surfaced as errors so SFN can retry or
-// transition to the failure terminal.
+// Merge is the workflow's success terminal: it commits success.
 //
-// Merge is idempotent: re-running it overwrites the merged object (same
-// key) and re-writes the JobRecord with the same fields, both
+//	Success is committed by Merge.
+//	Failure is committed by MarkJobFailed.
+//
+// The shape is intentionally asymmetric. MarkJobFailed only has a
+// JobRecord to write — there is no artifact, so it stands as its own
+// Lambda. Merge already has to write the JobRecord (to record the
+// merged ResultURI), so folding `status=succeeded` into the same
+// PutJob keeps the success state atomic: the merged blob in S3 and
+// the JobRecord's terminal status update land in one logical
+// transaction. Splitting Merge into "produce artifact" + a separate
+// "mark succeeded" Lambda would create a partial-state window — the
+// API would briefly answer GET /jobs/{id}/result with a real result
+// while GET /jobs/{id} still reports `running`.
+//
+// By the time Merge runs, CheckPages has already returned
+// CheckPagesStatusSucceeded for the same input, so every page is
+// expected to have a non-empty stage record with status=succeeded
+// and a populated ResultURI. Missing rows or empty ResultURIs are
+// surfaced as errors so SFN can retry or transition to the failure
+// terminal.
+//
+// Merge is idempotent: re-running it overwrites the merged object
+// (same key) and re-writes the JobRecord with the same fields, both
 // last-writer-wins.
 func Merge(ctx context.Context, in MergeInput, st store.Store, obj object.Store) (MergeOutput, error) {
 	if in.JobID == "" {

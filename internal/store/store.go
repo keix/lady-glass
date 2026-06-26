@@ -49,6 +49,12 @@ type JobRecord struct {
 	ResultURI string
 	PageCount int
 	Error     string
+	// Mode is the workflow mode the job was created with — currently
+	// "passthrough" (Gemini reads the whole PDF) or "rendered"
+	// (RenderPages splits the PDF into per-page PDFs first). Empty
+	// means the row predates the field and is treated as
+	// "passthrough" by callers.
+	Mode      string
 	UpdatedAt string
 }
 
