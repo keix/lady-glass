@@ -164,6 +164,58 @@ version)` after expiry MUST be treated as a new execution.
 A future revision MAY make the retention window negotiable per
 job (e.g. a "preserve until" header on `POST /jobs`).
 
+## S10. Chain binding
+
+A job is bound to the chain it was born with.
+
+At job creation, the operator's chain registry resolves a logical
+chain identifier (e.g. `card-statement-v1`) to an ordered list of
+`(stage_name, stage_version, queue_name)` tuples. This resolved
+list MUST be persisted on the JobRecord at creation time and MUST
+NOT be re-resolved on any subsequent read.
+
+A conforming implementation MUST:
+
+- expose a registry that maps each chain ID to an immutable
+  `ChainSpec` (an ordered list of `StageSpec`s);
+- write `chain_id` and the resolved `ChainSpec` onto the JobRecord
+  in the same write that creates the job — partial population is
+  not a legal intermediate state;
+- derive `first_queue`, `final_stage`, and `final_version` (the
+  values SubmitPages, CheckPages, and Merge consume from the SFN
+  task input) from the JobRecord's frozen `ChainSpec`, NOT from
+  any per-Lambda environment variable or the registry's current
+  contents.
+
+The contract operates on two layers:
+
+- *Read layer* (API status / result / aggregate): the JobRecord's
+  frozen chain MUST drive every read query against
+  `ListStagesByJob`. Changing the registry, or even rotating
+  through a deploy, MUST NOT change what an existing job's
+  status / result calls return.
+- *Compute layer* (per-page stage execution): the SQS message a
+  stage Lambda consumes carries `stage` and `version`; the
+  Lambda's idempotency key (S3) is built from those, so
+  succeeded-skip and result-URI paths remain correct. The
+  Lambda's choice of which queue to enqueue next is permitted to
+  remain Lambda-env-local in this spec revision — the operational
+  pattern for safely changing the chain is to deploy a new
+  parallel set of queues + Lambdas keyed by a new chain ID and
+  let the old chain's in-flight jobs drain through the retention
+  window defined in S9.
+
+Re-running the registry against the same chain ID after a code
+release that changed its definition is therefore safe for new
+jobs and inert for existing ones: the existing jobs continue to
+see their birth-time chain on every read, and the new jobs pick
+up the new chain on the next createJob.
+
+A future revision MAY make the chain ID a request parameter on
+POST /jobs so a single deployment can host multiple chains
+concurrently. The persistence contract above already supports
+this — only the API surface needs to opt in.
+
 ---
 
 ## Conformance map (informative)
@@ -183,6 +235,7 @@ normative.
 | S7     | `internal/stage/step.go` (Step interface) + `internal/pipeline/types.go` (ChainSpec) |
 | S8     | `infra/cdk/stack.go` (one queue + one Lambda per stage), `internal/workflow/{check_pages,merge}.go` |
 | S9     | `internal/store/dynamodb.go` (`RetentionDays`, `expires_at` attribute, read-time filter), `infra/cdk/stack.go` (`TimeToLiveAttribute` + bucket `LifecycleRules`) |
+| S10    | `internal/chain/` (Registry + Resolve), `internal/store/store.go` (`JobRecord.ChainID`, `JobRecord.Chain`), `internal/api/handler.go` (createJob freeze, startJob/status projection) |
 
 ---
 
