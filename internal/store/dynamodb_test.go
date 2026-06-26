@@ -3,8 +3,10 @@ package store_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -284,6 +286,120 @@ func TestDynamoStore_ListStagesByJob_FiltersAndIgnoresUnrelatedStages(t *testing
 		if r.Stage != "gemini" || r.Version != "v1" {
 			t.Fatalf("record %+v leaked through filter", r)
 		}
+	}
+}
+
+func TestDynamoStore_Put_AttachesExpiresAtWhenRetentionConfigured(t *testing.T) {
+	fake := newFakeDynamoClient()
+	frozen := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	st := &store.DynamoStore{
+		Client:        fake,
+		Table:         "lady-glass",
+		RetentionDays: 14,
+		Now:           func() time.Time { return frozen },
+	}
+
+	if err := st.PutJob(context.Background(), store.JobRecord{
+		JobID:  "job_ttl",
+		Status: store.JobStatusRunning,
+	}); err != nil {
+		t.Fatalf("put job: %v", err)
+	}
+
+	got, ok := fake.lastPut.Item["expires_at"].(*types.AttributeValueMemberN)
+	if !ok {
+		t.Fatalf("expires_at missing or wrong type: %#v", fake.lastPut.Item["expires_at"])
+	}
+	wantUnix := frozen.Add(14 * 24 * time.Hour).Unix()
+	gotUnix, err := strconv.ParseInt(got.Value, 10, 64)
+	if err != nil {
+		t.Fatalf("expires_at not an integer: %q", got.Value)
+	}
+	if gotUnix != wantUnix {
+		t.Fatalf("expires_at = %d, want %d (now + 14d)", gotUnix, wantUnix)
+	}
+}
+
+func TestDynamoStore_Put_OmitsExpiresAtWhenRetentionZero(t *testing.T) {
+	fake := newFakeDynamoClient()
+	st := store.NewDynamoStore(fake, "lady-glass")
+
+	if err := st.PutJob(context.Background(), store.JobRecord{
+		JobID:  "job_no_ttl",
+		Status: store.JobStatusRunning,
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if _, present := fake.lastPut.Item["expires_at"]; present {
+		t.Fatalf("expires_at should be omitted when RetentionDays=0")
+	}
+}
+
+func TestDynamoStore_GetJob_FiltersExpiredRows(t *testing.T) {
+	fake := newFakeDynamoClient()
+	// Clock starts in 2026-06-01, retention = 14d; we advance the clock
+	// past the row's expiry and expect Get to behave as if the row is
+	// already gone (defending against DDB's async TTL reaper lag).
+	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	st := &store.DynamoStore{
+		Client:        fake,
+		Table:         "lady-glass",
+		RetentionDays: 14,
+		Now:           func() time.Time { return clock },
+	}
+
+	if err := st.PutJob(context.Background(), store.JobRecord{
+		JobID:  "job_expired",
+		Status: store.JobStatusSucceeded,
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	clock = clock.Add(15 * 24 * time.Hour)
+
+	rec, err := st.GetJob(context.Background(), "job_expired")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if rec != nil {
+		t.Fatalf("expected nil for expired row, got %+v", rec)
+	}
+}
+
+func TestDynamoStore_ListStagesByJob_FiltersExpiredRows(t *testing.T) {
+	fake := newFakeDynamoClient()
+	clock := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	st := &store.DynamoStore{
+		Client:        fake,
+		Table:         "lady-glass",
+		RetentionDays: 14,
+		Now:           func() time.Time { return clock },
+	}
+
+	// Seed two pages at t0, then advance the clock past their expiry and
+	// add a third page so only the third should survive the read-time
+	// filter.
+	for _, page := range []int{1, 2} {
+		if err := st.MarkSucceeded(context.Background(), pipeline.StepOutput{
+			JobID: "job_ttl", Page: page, Stage: "gemini", Version: "v1",
+			ResultURI: "s3://bkt/r",
+		}, ""); err != nil {
+			t.Fatalf("seed page %d: %v", page, err)
+		}
+	}
+	clock = clock.Add(15 * 24 * time.Hour)
+	if err := st.MarkSucceeded(context.Background(), pipeline.StepOutput{
+		JobID: "job_ttl", Page: 3, Stage: "gemini", Version: "v1",
+		ResultURI: "s3://bkt/r",
+	}, ""); err != nil {
+		t.Fatalf("seed page 3: %v", err)
+	}
+
+	recs, err := st.ListStagesByJob(context.Background(), "job_ttl", "gemini", "v1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(recs) != 1 || recs[0].Page != 3 {
+		t.Fatalf("expected only page 3 to survive, got %+v", recs)
 	}
 }
 

@@ -26,6 +26,14 @@ type StageRecord struct {
 	ResultURI      string
 	NextStage      string
 	Error          string
+	// ExpiresAt is the unix-epoch second at which this record becomes
+	// expired. DynamoStore writes it on every Put when configured with
+	// a non-zero RetentionDays; DDB's per-item TTL eventually deletes
+	// the row (with up to 48h lag), and GetStage / ListStagesByJob
+	// filter expired rows out at read time so the lag is invisible to
+	// callers. Zero means "no expiry was attached" (in-memory paths,
+	// legacy rows written before retention shipped).
+	ExpiresAt int64
 }
 
 type JobStatus string
@@ -54,7 +62,11 @@ type JobRecord struct {
 	// (RenderPages splits the PDF into per-page PDFs first). Empty
 	// means the row predates the field and is treated as
 	// "passthrough" by callers.
-	Mode      string
+	Mode string
+	// ExpiresAt is the unix-epoch second at which this job row
+	// becomes expired. See StageRecord.ExpiresAt for the full
+	// contract (TTL + read-time filter, zero = no expiry).
+	ExpiresAt int64
 	UpdatedAt string
 }
 
