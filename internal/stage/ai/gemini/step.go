@@ -21,7 +21,7 @@ Return a JSON object with the following shape:
   }
 Respond with valid JSON only. Do not wrap it in markdown or explanatory prose.`
 
-// Step is the production ai.Step backed by Gemini via Google AI Studio.
+// Step is the production stage.Step backed by Gemini via Google AI Studio.
 // It fetches the page image from Objects, asks Client for multimodal
 // extraction, and persists the JSON result back to Objects.
 type Step struct {

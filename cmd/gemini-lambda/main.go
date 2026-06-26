@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
-	"github.com/keix/lady-glass/internal/ai/gemini"
+	"github.com/keix/lady-glass/internal/stage/ai/gemini"
 	"github.com/keix/lady-glass/internal/executor"
 	lglambda "github.com/keix/lady-glass/internal/lambda"
 	"github.com/keix/lady-glass/internal/object"

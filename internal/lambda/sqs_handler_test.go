@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 
-	"github.com/keix/lady-glass/internal/ai/lineocr"
+	"github.com/keix/lady-glass/internal/stage/ai/lineocr"
 	"github.com/keix/lady-glass/internal/executor"
 	"github.com/keix/lady-glass/internal/lambda"
 	"github.com/keix/lady-glass/internal/object"

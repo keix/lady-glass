@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/keix/lady-glass/internal/ai/gemini"
+	"github.com/keix/lady-glass/internal/stage/ai/gemini"
 	"github.com/keix/lady-glass/internal/object"
 	"github.com/keix/lady-glass/internal/pipeline"
 )
