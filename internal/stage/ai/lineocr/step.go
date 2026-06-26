@@ -9,6 +9,6 @@ package lineocr
 // Executor wiring exercised end-to-end.
 //
 // If document-level OCR pre-processing becomes useful (e.g., a real
-// Cloud Vision integration), implement a real ai.Step here and swap
+// Cloud Vision integration), implement a real stage.Step here and swap
 // lineocr.Mock for it in cmd/line-ocr-lambda. No other code changes
 // are needed — the Step interface is the only seam.

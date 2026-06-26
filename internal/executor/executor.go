@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/keix/lady-glass/internal/ai"
+	"github.com/keix/lady-glass/internal/stage"
 	"github.com/keix/lady-glass/internal/pipeline"
 	"github.com/keix/lady-glass/internal/queue"
 	"github.com/keix/lady-glass/internal/store"
 )
 
 type Executor struct {
-	Step      ai.Step
+	Step      stage.Step
 	NextStage *pipeline.StageSpec
 	Store     store.Store
 	Queue     queue.Queue
