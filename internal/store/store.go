@@ -63,6 +63,16 @@ type JobRecord struct {
 	// means the row predates the field and is treated as
 	// "passthrough" by callers.
 	Mode string
+	// ChainID is the logical chain key createJob resolved against
+	// the registry (SPEC §S10). Empty rows predate the chain-binding
+	// feature; callers fall back to chain.DefaultChainID.
+	ChainID string
+	// Chain is the frozen ChainSpec list, copied from the registry at
+	// createJob time. Read paths (status / result / aggregate) and
+	// startJob's SFN projection MUST drive their final_stage /
+	// final_version / first_queue decisions from this list, never from
+	// the registry's current contents or a per-Lambda env.
+	Chain []pipeline.StageSpec
 	// ExpiresAt is the unix-epoch second at which this job row
 	// becomes expired. See StageRecord.ExpiresAt for the full
 	// contract (TTL + read-time filter, zero = no expiry).

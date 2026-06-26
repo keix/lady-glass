@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -197,6 +198,10 @@ func (s *DynamoStore) GetJob(ctx context.Context, jobID string) (*JobRecord, err
 }
 
 func (s *DynamoStore) PutJob(ctx context.Context, rec JobRecord) error {
+	chainJSON, err := encodeChain(rec.Chain)
+	if err != nil {
+		return fmt.Errorf("store: encode chain: %w", err)
+	}
 	item := jobItem{
 		PK:        jobPK(rec.JobID),
 		SK:        jobSK(),
@@ -206,6 +211,8 @@ func (s *DynamoStore) PutJob(ctx context.Context, rec JobRecord) error {
 		ResultURI: rec.ResultURI,
 		PageCount: rec.PageCount,
 		Mode:      rec.Mode,
+		ChainID:   rec.ChainID,
+		ChainJSON: chainJSON,
 		Error:     rec.Error,
 		UpdatedAt: nowRFC3339(),
 		ExpiresAt: s.expiresAt(),
@@ -324,6 +331,14 @@ type jobItem struct {
 	ResultURI string `dynamodbav:"result_uri,omitempty"`
 	PageCount int    `dynamodbav:"page_count,omitempty"`
 	Mode      string `dynamodbav:"mode,omitempty"`
+	// ChainID and ChainJSON together implement SPEC §S10's frozen
+	// chain contract. ChainJSON is a JSON-encoded []pipeline.StageSpec
+	// kept as a string attribute so the schema does not bake in DDB's
+	// List<Map> shape — a future move into a typed DDB list is an
+	// implementation choice, not a wire change. Empty strings on
+	// legacy rows resolve to chain.DefaultChainID at read time.
+	ChainID   string `dynamodbav:"chain_id,omitempty"`
+	ChainJSON string `dynamodbav:"chain_json,omitempty"`
 	Error     string `dynamodbav:"error,omitempty"`
 
 	UpdatedAt string `dynamodbav:"updated_at"`
@@ -331,6 +346,7 @@ type jobItem struct {
 }
 
 func (i jobItem) toRecord() JobRecord {
+	chain, _ := decodeChain(i.ChainJSON)
 	return JobRecord{
 		JobID:     i.JobID,
 		Status:    JobStatus(i.Status),
@@ -338,10 +354,41 @@ func (i jobItem) toRecord() JobRecord {
 		ResultURI: i.ResultURI,
 		PageCount: i.PageCount,
 		Mode:      i.Mode,
+		ChainID:   i.ChainID,
+		Chain:     chain,
 		Error:     i.Error,
 		UpdatedAt: i.UpdatedAt,
 		ExpiresAt: i.ExpiresAt,
 	}
+}
+
+// encodeChain serialises the frozen ChainSpec list for storage. Empty /
+// nil chains map to the empty string so the omitempty tag suppresses
+// the attribute entirely on legacy rows.
+func encodeChain(chain []pipeline.StageSpec) (string, error) {
+	if len(chain) == 0 {
+		return "", nil
+	}
+	body, err := json.Marshal(chain)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+// decodeChain is the inverse. A malformed string (manual edit, schema
+// drift) returns the empty slice rather than poisoning the read path;
+// callers can detect this via the parallel ChainID being non-empty and
+// fall back to chain.Resolve(rec.ChainID).
+func decodeChain(s string) ([]pipeline.StageSpec, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var chain []pipeline.StageSpec
+	if err := json.Unmarshal([]byte(s), &chain); err != nil {
+		return nil, err
+	}
+	return chain, nil
 }
 
 func jobPK(jobID string) string {

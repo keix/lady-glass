@@ -33,11 +33,13 @@ import (
 //
 // Optional env (with defaults):
 //
-//	LADY_GLASS_FIRST_QUEUE          first stage queue name        (gemini)
-//	LADY_GLASS_FINAL_STAGE          final stage name              (gemini)
-//	LADY_GLASS_FINAL_VERSION        final stage version           (v1)
 //	LADY_GLASS_UPLOAD_EXPIRES_MIN   presigned PUT validity in min (15)
 //	LADY_GLASS_RETENTION_DAYS       DDB TTL window (SPEC §S9)      (14)
+//
+// The chain (first_queue / final_stage / final_version) is no longer
+// taken from env. createJob freezes a ChainSpec onto the JobRecord
+// from internal/chain.Resolve(), and the read paths derive everything
+// downstream from there (SPEC §S10).
 func main() {
 	ctx := context.Background()
 
@@ -46,9 +48,6 @@ func main() {
 	stateMachineARN := mustEnv("LADY_GLASS_STATE_MACHINE_ARN")
 	apiKey := mustEnv("LADY_GLASS_API_KEY")
 
-	firstQueue := envDefault("LADY_GLASS_FIRST_QUEUE", "gemini")
-	finalStage := envDefault("LADY_GLASS_FINAL_STAGE", "gemini")
-	finalVersion := envDefault("LADY_GLASS_FINAL_VERSION", "v1")
 	uploadExpiresMin := envIntDefault("LADY_GLASS_UPLOAD_EXPIRES_MIN", 15)
 	retentionDays := envIntDefault("LADY_GLASS_RETENTION_DAYS", 14)
 
@@ -73,9 +72,6 @@ func main() {
 		SFn:             &sdkSFn{client: sfn.NewFromConfig(cfg)},
 		Bucket:          bucket,
 		StateMachineARN: stateMachineARN,
-		FirstQueue:      firstQueue,
-		FinalStage:      finalStage,
-		FinalVersion:    finalVersion,
 		APIKey:          apiKey,
 		UploadExpiresIn: time.Duration(uploadExpiresMin) * time.Minute,
 	}
@@ -130,13 +126,6 @@ func mustEnv(key string) string {
 		log.Fatalf("env %s is required", key)
 	}
 	return v
-}
-
-func envDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func envIntDefault(key string, fallback int) int {

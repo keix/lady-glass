@@ -341,14 +341,16 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		nil,
 	)
 
+	// FIRST_QUEUE / FINAL_STAGE / FINAL_VERSION used to live here as
+	// chain config. They are now resolved per-job via
+	// internal/chain.Resolve() at createJob time and frozen onto the
+	// JobRecord (SPEC §S10), so the API Lambda no longer needs to
+	// know the chain shape ahead of time.
 	apiLambda := makeLambda("ApiLambda", "api-lambda", &map[string]*string{
 		"LADY_GLASS_TABLE":              table.TableName(),
 		"LADY_GLASS_BUCKET":             bucket.BucketName(),
 		"LADY_GLASS_STATE_MACHINE_ARN":  stateMachine.StateMachineArn(),
 		"LADY_GLASS_API_KEY":            apiKey,
-		"LADY_GLASS_FIRST_QUEUE":        jsii.String("gemini"),
-		"LADY_GLASS_FINAL_STAGE":        jsii.String("normalize_card_statement"),
-		"LADY_GLASS_FINAL_VERSION":      jsii.String("v1"),
 		"LADY_GLASS_UPLOAD_EXPIRES_MIN": jsii.String("15"),
 		"LADY_GLASS_RETENTION_DAYS":     retentionDays,
 	})

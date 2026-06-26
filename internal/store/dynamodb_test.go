@@ -403,6 +403,64 @@ func TestDynamoStore_ListStagesByJob_FiltersExpiredRows(t *testing.T) {
 	}
 }
 
+func TestDynamoStore_PutAndGetJob_RoundTripsChain(t *testing.T) {
+	fake := newFakeDynamoClient()
+	st := store.NewDynamoStore(fake, "lady-glass")
+	ctx := context.Background()
+
+	chain := []pipeline.StageSpec{
+		{Name: "gemini", Version: "v1", QueueName: "gemini"},
+		{Name: "normalize_card_statement", Version: "v1", QueueName: "normalize_card_statement"},
+	}
+	if err := st.PutJob(ctx, store.JobRecord{
+		JobID:   "job_chain",
+		Status:  store.JobStatusCreated,
+		ChainID: "card-statement-v1",
+		Chain:   chain,
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	rec, err := st.GetJob(ctx, "job_chain")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if rec.ChainID != "card-statement-v1" {
+		t.Fatalf("ChainID = %q", rec.ChainID)
+	}
+	if len(rec.Chain) != 2 {
+		t.Fatalf("Chain = %+v, want 2 stages", rec.Chain)
+	}
+	if rec.Chain[0].Name != "gemini" || rec.Chain[1].Name != "normalize_card_statement" {
+		t.Fatalf("Chain ordering lost: %+v", rec.Chain)
+	}
+}
+
+func TestDynamoStore_LegacyRowReadsEmptyChain(t *testing.T) {
+	// A row written before the chain-binding feature has no chain_id
+	// or chain_json attribute. GetJob must read it back with empty
+	// ChainID and nil Chain so the API layer's fallback to
+	// chain.DefaultChainID can kick in.
+	fake := newFakeDynamoClient()
+	st := store.NewDynamoStore(fake, "lady-glass")
+	ctx := context.Background()
+
+	if err := st.PutJob(ctx, store.JobRecord{
+		JobID:  "job_legacy",
+		Status: store.JobStatusSucceeded,
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	rec, err := st.GetJob(ctx, "job_legacy")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if rec.ChainID != "" || len(rec.Chain) != 0 {
+		t.Fatalf("legacy row should round-trip empty chain, got id=%q chain=%+v", rec.ChainID, rec.Chain)
+	}
+}
+
 func TestDynamoStore_PutError_IsWrapped(t *testing.T) {
 	fake := newFakeDynamoClient()
 	fake.putErr = errors.New("simulated put failure")
