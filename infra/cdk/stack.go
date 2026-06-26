@@ -117,7 +117,7 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		TimeToLiveAttribute: jsii.String("expires_at"),
 	})
 
-	// --- Stage queue + DLQ ----------------------------------------------
+	// --- Stage queues + DLQs --------------------------------------------
 
 	geminiDLQ := awssqs.NewQueue(stack, jsii.String("GeminiDLQ"), &awssqs.QueueProps{
 		RetentionPeriod: awscdk.Duration_Days(jsii.Number(14)),
@@ -131,6 +131,22 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(600)),
 		DeadLetterQueue: &awssqs.DeadLetterQueue{
 			Queue:           geminiDLQ,
+			MaxReceiveCount: jsii.Number(5),
+		},
+	})
+
+	normalizeDLQ := awssqs.NewQueue(stack, jsii.String("NormalizeCardStatementDLQ"), &awssqs.QueueProps{
+		RetentionPeriod: awscdk.Duration_Days(jsii.Number(14)),
+	})
+
+	// The normaliser is pure compute (S3 read + S3 write + DDB update)
+	// with no provider call, so it finishes in well under a second per
+	// page. The matching visibility timeout is still kept at ≥ Lambda
+	// timeout × ~1.5 — same rule as the Gemini queue.
+	normalizeQueue := awssqs.NewQueue(stack, jsii.String("NormalizeCardStatementQueue"), &awssqs.QueueProps{
+		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(120)),
+		DeadLetterQueue: &awssqs.DeadLetterQueue{
+			Queue:           normalizeDLQ,
 			MaxReceiveCount: jsii.Number(5),
 		},
 	})
@@ -209,10 +225,14 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	// envelope for gemini-2.5-flash; adjust per the deployed key's
 	// quota. Each future stage gets its own stageRuntimeProps value.
 	geminiLambda := addStage("GeminiLambda", "gemini-lambda", geminiQueue, &map[string]*string{
-		"LADY_GLASS_TABLE":           table.TableName(),
-		"LADY_GLASS_BUCKET":          bucket.BucketName(),
-		"LADY_GLASS_GEMINI_API_KEY":  geminiAPIKey,
-		"LADY_GLASS_RETENTION_DAYS":  retentionDays,
+		"LADY_GLASS_TABLE":                table.TableName(),
+		"LADY_GLASS_BUCKET":               bucket.BucketName(),
+		"LADY_GLASS_GEMINI_API_KEY":       geminiAPIKey,
+		"LADY_GLASS_RETENTION_DAYS":       retentionDays,
+		"LADY_GLASS_NEXT_STAGE_NAME":      jsii.String("normalize_card_statement"),
+		"LADY_GLASS_NEXT_STAGE_VERSION":   jsii.String("v1"),
+		"LADY_GLASS_NEXT_QUEUE_NAME":      jsii.String("normalize_card_statement"),
+		"LADY_GLASS_NEXT_QUEUE_URL":       normalizeQueue.QueueUrl(),
 	}, stageRuntimeProps{
 		ReservedConcurrency: 10,
 		BatchSize:           1,
@@ -221,6 +241,25 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 
 	bucket.GrantReadWrite(geminiLambda, nil)
 	table.GrantReadWriteData(geminiLambda)
+	normalizeQueue.GrantSendMessages(geminiLambda)
+
+	// --- Stage Lambda: normalize_card_statement -------------------------
+
+	// Pure-compute post-processor: no provider call, no rate limit.
+	// Concurrency is bounded by the SQS in-flight rather than a quota,
+	// and 25 is comfortable headroom for a 25-page statement to drain
+	// in parallel.
+	normalizeLambda := addStage("NormalizeCardStatementLambda", "normalize-card-statement-lambda", normalizeQueue, &map[string]*string{
+		"LADY_GLASS_TABLE":          table.TableName(),
+		"LADY_GLASS_BUCKET":         bucket.BucketName(),
+		"LADY_GLASS_RETENTION_DAYS": retentionDays,
+	}, stageRuntimeProps{
+		BatchSize:      1,
+		MaxConcurrency: 25,
+	})
+
+	bucket.GrantReadWrite(normalizeLambda, nil)
+	table.GrantReadWriteData(normalizeLambda)
 
 	// --- Workflow Lambdas ------------------------------------------------
 
@@ -306,7 +345,7 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		"LADY_GLASS_STATE_MACHINE_ARN":  stateMachine.StateMachineArn(),
 		"LADY_GLASS_API_KEY":            apiKey,
 		"LADY_GLASS_FIRST_QUEUE":        jsii.String("gemini"),
-		"LADY_GLASS_FINAL_STAGE":        jsii.String("gemini"),
+		"LADY_GLASS_FINAL_STAGE":        jsii.String("normalize_card_statement"),
 		"LADY_GLASS_FINAL_VERSION":      jsii.String("v1"),
 		"LADY_GLASS_UPLOAD_EXPIRES_MIN": jsii.String("15"),
 		"LADY_GLASS_RETENTION_DAYS":     retentionDays,

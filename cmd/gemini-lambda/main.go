@@ -16,6 +16,7 @@ import (
 	"github.com/keix/lady-glass/internal/executor"
 	lglambda "github.com/keix/lady-glass/internal/lambda"
 	"github.com/keix/lady-glass/internal/object"
+	"github.com/keix/lady-glass/internal/pipeline"
 	"github.com/keix/lady-glass/internal/queue"
 	"github.com/keix/lady-glass/internal/store"
 )
@@ -34,6 +35,13 @@ import (
 //
 //	LADY_GLASS_GEMINI_MODEL       Gemini model (default: gemini-2.5-flash)
 //	LADY_GLASS_RETENTION_DAYS     DDB TTL window (SPEC §S9)        (14)
+//
+// Optional env (next-stage wiring; leave unset to make gemini terminal):
+//
+//	LADY_GLASS_NEXT_STAGE_NAME       e.g. "normalize_card_statement"
+//	LADY_GLASS_NEXT_STAGE_VERSION    e.g. "v1"
+//	LADY_GLASS_NEXT_QUEUE_NAME       logical queue name for the next stage
+//	LADY_GLASS_NEXT_QUEUE_URL        SQS URL the next stage's ESM is bound to
 func main() {
 	ctx := context.Background()
 
@@ -55,9 +63,8 @@ func main() {
 	st := store.NewDynamoStore(dynamodb.NewFromConfig(cfg), table)
 	st.RetentionDays = retentionDays
 
-	// Producing queue is unused (no NextStage) but stays wired so chain
-	// extensions only require an env entry.
-	q := queue.NewSQSQueue(sqs.NewFromConfig(cfg), map[string]string{})
+	nextStage, queueURLs := loadNextStageFromEnv()
+	q := queue.NewSQSQueue(sqs.NewFromConfig(cfg), queueURLs)
 
 	sdkClient, err := gemini.NewSDKClient(ctx, apiKey, model)
 	if err != nil {
@@ -67,12 +74,41 @@ func main() {
 	step := &gemini.Step{Client: sdkClient, Objects: objects}
 
 	ex := &executor.Executor{
-		Step:  step,
-		Store: st,
-		Queue: q,
+		Step:      step,
+		NextStage: nextStage,
+		Store:     st,
+		Queue:     q,
 	}
 
 	awslambda.Start(lglambda.NewSQSHandler(ex))
+}
+
+// loadNextStageFromEnv reads the four LADY_GLASS_NEXT_* env vars and
+// returns a populated StageSpec plus the queue-URL map. All four are
+// required as a set; missing any one means "no next stage" and the
+// Executor falls back to terminal-stage behaviour. A partial set is
+// rejected loudly rather than silently mis-routed.
+func loadNextStageFromEnv() (*pipeline.StageSpec, map[string]string) {
+	name := os.Getenv("LADY_GLASS_NEXT_STAGE_NAME")
+	version := os.Getenv("LADY_GLASS_NEXT_STAGE_VERSION")
+	queueName := os.Getenv("LADY_GLASS_NEXT_QUEUE_NAME")
+	queueURL := os.Getenv("LADY_GLASS_NEXT_QUEUE_URL")
+
+	allUnset := name == "" && version == "" && queueName == "" && queueURL == ""
+	allSet := name != "" && version != "" && queueName != "" && queueURL != ""
+	if !allUnset && !allSet {
+		log.Fatalf("LADY_GLASS_NEXT_* env vars must be all set or all unset; got name=%q version=%q queue_name=%q queue_url_set=%v", name, version, queueName, queueURL != "")
+	}
+	if !allSet {
+		return nil, map[string]string{}
+	}
+	return &pipeline.StageSpec{
+			Name:      name,
+			Version:   version,
+			QueueName: queueName,
+		}, map[string]string{
+			queueName: queueURL,
+		}
 }
 
 func mustEnv(key string) string {

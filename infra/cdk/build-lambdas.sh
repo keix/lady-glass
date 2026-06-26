@@ -15,6 +15,7 @@ OUT="$ROOT/infra/cdk/bin"
 
 LAMBDAS=(
     gemini-lambda
+    normalize-card-statement-lambda
     submit-pages-lambda
     check-pages-lambda
     merge-lambda
