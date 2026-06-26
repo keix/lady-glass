@@ -93,6 +93,22 @@ After import, the rest of the pipeline works with the stored artifact URI.
 * **Step Functions does not chain AI steps.** Page-level retry and ack stay inside SQS so workflow state transitions don't multiply with page count, and so external API limits don't leak into the workflow.
 * **CheckPages is read-only.** It polls DynamoDB and either keeps waiting, merges, or fails the job. No work happens inside the workflow itself beyond orchestration.
 
+### Idempotency
+
+Lady Glass treats idempotency as part of the control plane.
+
+Each page-level stage is keyed by:
+
+```text
+job_id + page + stage + version
+```
+
+Before a stage runs, DynamoDB is checked for the stage record. If the same stage has already succeeded, the external provider call is skipped and the stored artifact is reused.
+
+This makes SQS redelivery, Lambda retry, and workflow retry safe: retries collapse to the same succeeded stage record instead of re-billing the same AI operation.
+
+DynamoDB records are temporary execution state. Stage records, idempotency keys, and job events are written with TTL attributes; the retention window defines how long idempotency is guaranteed for completed jobs.
+
 ### Execution modes
 
 Lady Glass supports two workflow modes selected per job at submission time.
@@ -109,11 +125,37 @@ lady-glass submit ./long_report.pdf --mode rendered     # per-page split
 ## AWS Deploy
 Lady Glass infrastructure is defined with AWS CDK.
 
+Before the first deploy, provision two SSM parameters:
+
 ```bash
-cdk deploy
+aws ssm put-parameter --type String --name /lady-glass/gemini-api-key \
+  --value "<your Google AI Studio key>"
+aws ssm put-parameter --type String --name /lady-glass/api-key \
+  --value "$(openssl rand -hex 32)"
 ```
 
-This deploys the SQS, Lambda, DynamoDB, S3, and Step Functions resources used by the cloud pipeline.
+Then build the Go Lambda binaries and deploy:
+
+```bash
+./infra/cdk/build-lambdas.sh
+cd infra/cdk && cdk deploy
+```
+
+This deploys the SQS, Lambda, DynamoDB, S3, API Gateway, and Step Functions resources used by the cloud pipeline. The stack outputs `ApiUrl`; put it and the API key into `.env` as `LADY_GLASS_API_URL` and `LADY_GLASS_API_TOKEN` so the CLI can reach the deployed stack.
+
+## API
+
+Lady Glass exposes five HTTP endpoints fronted by API Gateway. Auth is a shared `X-Api-Key` header. See [`internal/api/types.go`](internal/api/types.go) for the full request / response contract.
+
+```text
+POST /jobs                              open a job; returns a presigned upload URL
+POST /jobs/{id}/start                   kick off the SFn workflow once uploaded
+GET  /jobs/{id}                         status snapshot with per-page counts
+GET  /jobs/{id}/result                  merged typed extraction (JSON)
+GET  /jobs/{id}/aggregate?merchant=X    matching transactions + JPY total
+```
+
+The `lady-glass` CLI wraps these endpoints — see Local Development below.
 
 ## Local Development
 Lady Glass can run locally without AWS.
