@@ -22,6 +22,27 @@ type LadyGlassStackProps struct {
 	awscdk.StackProps
 }
 
+// stageRuntimeProps tunes the per-stage runtime knobs that the spec
+// (SPEC.md §S1, §S8) makes mutable per stage. Every SQS-triggered
+// stage MUST supply these — the values are how the stage matches its
+// underlying provider's rate limit.
+type stageRuntimeProps struct {
+	// ReservedConcurrency caps the concurrent Lambda invocations for
+	// this stage. Zero means "no override" (the account-wide pool).
+	// SPEC.md §S1 SHOULD: set this to bound the provider's rate.
+	ReservedConcurrency int
+
+	// BatchSize is the number of SQS messages each Lambda invocation
+	// processes. SPEC.md §S1 fixes this at 1 for v1 of the spec; any
+	// value other than 1 implies a spec version bump.
+	BatchSize int
+
+	// MaxConcurrency caps the SQS → Lambda in-flight messages. AWS
+	// guidance is MaxConcurrency >= ReservedConcurrency so the ESM
+	// never sits idle while the Lambda has capacity.
+	MaxConcurrency int
+}
+
 // NewLadyGlassStack defines every resource Lady Glass needs to run:
 // the artifact bucket, the control-plane table, the per-page SQS queue
 // + DLQ, the five Lambda functions, the SQS → gemini-lambda Event
@@ -125,27 +146,48 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		})
 	}
 
+	// addStage wires an SQS-triggered stage in one place: it builds
+	// the Lambda via makeLambda, applies the per-stage reserved
+	// concurrency (when set), and attaches the Event Source Mapping
+	// with the spec-required batch size + the per-stage MaxConcurrency.
+	// Returns the Function so the caller can wire grants.
+	addStage := func(id, cmdDir string, queue awssqs.IQueue, env *map[string]*string, rt stageRuntimeProps) awslambda.Function {
+		fn := makeLambda(id, cmdDir, env)
+
+		if rt.ReservedConcurrency > 0 {
+			fn.Node().DefaultChild().(awslambda.CfnFunction).
+				AddPropertyOverride(
+					jsii.String("ReservedConcurrentExecutions"),
+					jsii.Number(float64(rt.ReservedConcurrency)),
+				)
+		}
+
+		fn.AddEventSource(awslambdasources.NewSqsEventSource(queue, &awslambdasources.SqsEventSourceProps{
+			BatchSize:               jsii.Number(float64(rt.BatchSize)),
+			MaxConcurrency:          jsii.Number(float64(rt.MaxConcurrency)),
+			ReportBatchItemFailures: jsii.Bool(false),
+		}))
+
+		return fn
+	}
+
 	// --- Stage Lambda: gemini --------------------------------------------
 
-	geminiLambda := makeLambda("GeminiLambda", "gemini-lambda", &map[string]*string{
+	// Reserved concurrency 10 matches the Google AI Studio free-tier
+	// envelope for gemini-2.5-flash; adjust per the deployed key's
+	// quota. Each future stage gets its own stageRuntimeProps value.
+	geminiLambda := addStage("GeminiLambda", "gemini-lambda", geminiQueue, &map[string]*string{
 		"LADY_GLASS_TABLE":          table.TableName(),
 		"LADY_GLASS_BUCKET":         bucket.BucketName(),
 		"LADY_GLASS_GEMINI_API_KEY": geminiAPIKey,
+	}, stageRuntimeProps{
+		ReservedConcurrency: 10,
+		BatchSize:           1,
+		MaxConcurrency:      10,
 	})
-	// Cap concurrent Gemini calls so the upstream API limits stay
-	// inside the per-stage Lambda, exactly as design §10 calls out.
-	geminiLambda.Node().DefaultChild().(awslambda.CfnFunction).
-		AddPropertyOverride(jsii.String("ReservedConcurrentExecutions"), jsii.Number(10))
 
 	bucket.GrantReadWrite(geminiLambda, nil)
 	table.GrantReadWriteData(geminiLambda)
-
-	// SQS → gemini-lambda
-	geminiLambda.AddEventSource(awslambdasources.NewSqsEventSource(geminiQueue, &awslambdasources.SqsEventSourceProps{
-		BatchSize:               jsii.Number(1),
-		MaxConcurrency:          jsii.Number(10),
-		ReportBatchItemFailures: jsii.Bool(false),
-	}))
 
 	// --- Workflow Lambdas ------------------------------------------------
 
