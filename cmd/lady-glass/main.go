@@ -57,7 +57,8 @@ func usage() {
 	fmt.Println("usage:")
 	fmt.Println("  lady-glass dev                              run the local mock chain")
 	fmt.Println("  lady-glass gemini <file>                    smoke-test real Gemini against a local file")
-	fmt.Println("  lady-glass submit <file> [--json]           upload + start a job")
+	fmt.Println("  lady-glass submit <file> [--mode passthrough|rendered] [--json]")
+	fmt.Println("                                              upload + start a job")
 	fmt.Println("  lady-glass status <job_id> [--json]         poll job status")
 	fmt.Println("  lady-glass result <job_id>                  fetch merged extraction (JSON)")
 	fmt.Println("  lady-glass aggregate <job_id> --merchant X [--json]   merchant rollup")
@@ -286,11 +287,19 @@ func newAPIClient() *client.Client {
 func runSubmit(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("submit", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON output")
+	mode := fs.String("mode", "", `workflow mode: "passthrough" (default) or "rendered"`)
 	_ = fs.Parse(args)
 	if fs.NArg() < 1 {
-		log.Fatal("usage: lady-glass submit <file> [--json]")
+		log.Fatal("usage: lady-glass submit <file> [--mode passthrough|rendered] [--json]")
 	}
 	path := fs.Arg(0)
+
+	switch api.Mode(*mode) {
+	case "", api.ModePassthrough, api.ModeRendered:
+		// ok
+	default:
+		log.Fatalf("invalid --mode %q; want passthrough or rendered", *mode)
+	}
 
 	c := newAPIClient()
 	filename := filepath.Base(path)
@@ -299,6 +308,7 @@ func runSubmit(ctx context.Context, args []string) {
 	created, err := c.CreateJob(ctx, api.CreateJobRequest{
 		Filename:    filename,
 		ContentType: contentType,
+		Mode:        api.Mode(*mode),
 	})
 	if err != nil {
 		log.Fatalf("create job: %v", err)
