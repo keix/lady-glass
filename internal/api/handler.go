@@ -15,6 +15,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"github.com/keix/lady-glass/internal/chain"
 	"github.com/keix/lady-glass/internal/object"
 	"github.com/keix/lady-glass/internal/pipeline"
 	"github.com/keix/lady-glass/internal/store"
@@ -74,14 +75,6 @@ type Handler struct {
 
 	// StateMachineARN is the Lady Glass SFn workflow ARN.
 	StateMachineARN string
-
-	// FirstQueue, FinalStage, FinalVersion are the per-chain
-	// parameters embedded into SFn execution input. FinalStage /
-	// FinalVersion also drive ListStagesByJob in status / result /
-	// aggregate.
-	FirstQueue   string
-	FinalStage   string
-	FinalVersion string
 
 	// APIKey is the shared secret the client sends in X-Api-Key.
 	// Compared via direct string equality; rotation is by SSM put.
@@ -152,11 +145,23 @@ func (h *Handler) createJob(ctx context.Context, req events.APIGatewayV2HTTPRequ
 		mode = ModePassthrough
 	}
 
+	// SPEC §S10: resolve the chain at job birth and freeze the
+	// ChainSpec onto the JobRecord in the same write. Future reads
+	// (status / result / aggregate / startJob's SFN input) consume
+	// the frozen list, so a later chain rotation cannot rewrite this
+	// job's view of its own stages.
+	chainSpec, err := chain.Resolve(in.ChainID)
+	if err != nil {
+		return errorResponse(400, ErrCodeBadRequest, err.Error()), nil
+	}
+
 	if err := h.Store.PutJob(ctx, store.JobRecord{
 		JobID:    jobID,
 		Status:   store.JobStatusCreated,
 		InputURI: fmt.Sprintf("s3://%s/%s", h.Bucket, key),
 		Mode:     string(mode),
+		ChainID:  chainSpec.ID,
+		Chain:    chainSpec.Stages,
 	}); err != nil {
 		return errorResponse(500, ErrCodeInternalError, fmt.Sprintf("put job: %v", err)), nil
 	}
@@ -191,6 +196,13 @@ func (h *Handler) startJob(ctx context.Context, _ events.APIGatewayV2HTTPRequest
 		mode = string(ModePassthrough)
 	}
 
+	chainSpec, err := chainOf(rec)
+	if err != nil {
+		return errorResponse(500, ErrCodeInternalError, fmt.Sprintf("resolve chain: %v", err)), nil
+	}
+	first := chainSpec.Stages[0]
+	final := chainSpec.Stages[len(chainSpec.Stages)-1]
+
 	// pages is only consumed on the passthrough branch (the rendered
 	// branch projects $.render_result.pages instead); send the source
 	// URI as a single-element placeholder so the ModeChoice can
@@ -200,9 +212,9 @@ func (h *Handler) startJob(ctx context.Context, _ events.APIGatewayV2HTTPRequest
 		"input_uri":     rec.InputURI,
 		"pages":         []string{rec.InputURI},
 		"mode":          mode,
-		"first_queue":   h.FirstQueue,
-		"final_stage":   h.FinalStage,
-		"final_version": h.FinalVersion,
+		"first_queue":   first.QueueName,
+		"final_stage":   final.Name,
+		"final_version": final.Version,
 	})
 	if err != nil {
 		return errorResponse(500, ErrCodeInternalError, fmt.Sprintf("marshal sfn input: %v", err)), nil
@@ -230,7 +242,13 @@ func (h *Handler) getStatus(ctx context.Context, _ events.APIGatewayV2HTTPReques
 		return errorResponse(404, ErrCodeNotFound, fmt.Sprintf("job %q does not exist", jobID)), nil
 	}
 
-	stages, err := h.Store.ListStagesByJob(ctx, jobID, h.FinalStage, h.FinalVersion)
+	chainSpec, err := chainOf(rec)
+	if err != nil {
+		return errorResponse(500, ErrCodeInternalError, fmt.Sprintf("resolve chain: %v", err)), nil
+	}
+	final := chainSpec.Stages[len(chainSpec.Stages)-1]
+
+	stages, err := h.Store.ListStagesByJob(ctx, jobID, final.Name, final.Version)
 	if err != nil {
 		return errorResponse(500, ErrCodeInternalError, fmt.Sprintf("list stages: %v", err)), nil
 	}
@@ -500,6 +518,20 @@ func errorResponse(status int, code, message string) events.APIGatewayV2HTTPResp
 }
 
 // --- misc helpers ----------------------------------------------------
+
+// chainOf returns the ChainSpec the job was bound to at creation. The
+// JobRecord's frozen Chain is the source of truth (SPEC §S10); rows
+// written before the chain-binding feature have empty Chain, in which
+// case we re-resolve via the registry. The fallback uses the JobRecord's
+// ChainID when present and the registry default otherwise — so a legacy
+// row gets the operator's current default chain, which matches what
+// the env-driven Handler used to do.
+func chainOf(rec *store.JobRecord) (pipeline.ChainSpec, error) {
+	if len(rec.Chain) > 0 {
+		return pipeline.ChainSpec{ID: rec.ChainID, Stages: rec.Chain}, nil
+	}
+	return chain.Resolve(rec.ChainID)
+}
 
 // parseAmount strips group separators and parses the decimal Amount /
 // ForeignAmount strings into a float64. The source PDFs print amounts

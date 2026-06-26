@@ -46,6 +46,13 @@ type CreateJobRequest struct {
 
 	// Mode selects the workflow shape. Empty = passthrough.
 	Mode Mode `json:"mode,omitempty"`
+
+	// ChainID names the stage chain the job runs on (SPEC §S10).
+	// The empty value resolves to chain.DefaultChainID inside the
+	// API handler; supplying an unknown id yields 400. Specified
+	// here for completeness — v0 deployments hardcode a single
+	// chain so most callers will leave it empty.
+	ChainID string `json:"chain_id,omitempty"`
 }
 
 // CreateJobResponse hands the client a presigned URL and the server-

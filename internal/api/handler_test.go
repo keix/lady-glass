@@ -63,9 +63,6 @@ func newHandler(t *testing.T) (*api.Handler, *fakePresigner, *fakeSFn) {
 		SFn:             sf,
 		Bucket:          "bkt",
 		StateMachineARN: "arn:aws:states:...:stateMachine:wf",
-		FirstQueue:      "gemini",
-		FinalStage:      "gemini",
-		FinalVersion:    "v1",
 		APIKey:          "secret",
 		UploadExpiresIn: 15 * time.Minute,
 		NewJobID:        func() string { return "job_test_001" },
@@ -154,11 +151,18 @@ func TestStartJob_KicksSFnExecution(t *testing.T) {
 	h, _, sf := newHandler(t)
 	ctx := context.Background()
 
-	// Pre-stage a job created by an earlier POST /jobs.
+	// Pre-stage a job and pin its chain explicitly so the test's
+	// assertion does not depend on whatever chain the registry's
+	// default points at today.
 	if err := h.Store.PutJob(ctx, store.JobRecord{
 		JobID:    "job_x",
 		Status:   store.JobStatusCreated,
 		InputURI: "s3://bkt/jobs/job_x/input.pdf",
+		ChainID:  "test-two-stage",
+		Chain: []pipeline.StageSpec{
+			{Name: "line_ocr", Version: "v2", QueueName: "line_ocr_q"},
+			{Name: "gemini", Version: "v1", QueueName: "gemini"},
+		},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -172,14 +176,18 @@ func TestStartJob_KicksSFnExecution(t *testing.T) {
 		t.Fatalf("execution_arn = %q", out.ExecutionARN)
 	}
 
-	// SFn input round-trips the job_id and the final_stage/version.
+	// SFn input round-trips the first-queue / last-stage / last-version
+	// projected from the JobRecord's frozen Chain.
 	var sfnInput map[string]any
 	_ = json.Unmarshal([]byte(sf.lastInput), &sfnInput)
 	if sfnInput["job_id"] != "job_x" {
 		t.Fatalf("sfn input job_id = %v", sfnInput["job_id"])
 	}
+	if sfnInput["first_queue"] != "line_ocr_q" {
+		t.Fatalf("sfn input first_queue = %v, want line_ocr_q", sfnInput["first_queue"])
+	}
 	if sfnInput["final_stage"] != "gemini" || sfnInput["final_version"] != "v1" {
-		t.Fatalf("sfn input chain = %v", sfnInput)
+		t.Fatalf("sfn input final = %v / %v", sfnInput["final_stage"], sfnInput["final_version"])
 	}
 }
 
@@ -246,6 +254,45 @@ func TestCreateJob_DefaultsToPassthrough(t *testing.T) {
 	}
 }
 
+func TestCreateJob_FreezesDefaultChainOnJobRecord(t *testing.T) {
+	h, _, _ := newHandler(t)
+	ctx := context.Background()
+
+	createBody, _ := json.Marshal(api.CreateJobRequest{Filename: "tiny.pdf"})
+	resp, _ := h.Handle(ctx, makeReq("POST", "/jobs", string(createBody), nil))
+	if resp.StatusCode != 200 {
+		t.Fatalf("create: %d", resp.StatusCode)
+	}
+	created := decode[api.CreateJobResponse](t, resp.Body)
+
+	rec, _ := h.Store.GetJob(ctx, created.JobID)
+	if rec == nil {
+		t.Fatal("no JobRecord persisted")
+	}
+	if rec.ChainID == "" {
+		t.Fatalf("ChainID empty; expected the registry default to be frozen onto the row")
+	}
+	if len(rec.Chain) == 0 {
+		t.Fatal("Chain empty; createJob must freeze the resolved StageSpec list")
+	}
+	if rec.Chain[len(rec.Chain)-1].Name != "normalize_card_statement" {
+		t.Fatalf("default chain terminal stage = %q, want normalize_card_statement", rec.Chain[len(rec.Chain)-1].Name)
+	}
+}
+
+func TestCreateJob_RejectsUnknownChainID(t *testing.T) {
+	h, _, _ := newHandler(t)
+
+	createBody, _ := json.Marshal(api.CreateJobRequest{
+		Filename: "tiny.pdf",
+		ChainID:  "does-not-exist",
+	})
+	resp, _ := h.Handle(context.Background(), makeReq("POST", "/jobs", string(createBody), nil))
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, resp.Body)
+	}
+}
+
 func TestStartJob_RejectsMissingJob(t *testing.T) {
 	h, _, _ := newHandler(t)
 	resp, _ := h.Handle(context.Background(), makeReq("POST", "/jobs/missing/start", "", nil))
@@ -263,12 +310,21 @@ func TestStatus_AggregatesPerPageCounts(t *testing.T) {
 	h, _, _ := newHandler(t)
 	ctx := context.Background()
 
+	// The seeded JobRecord pins its own chain so the test does not
+	// depend on whatever the operator's default chain happens to be.
+	// getStatus reads the final stage from JobRecord.Chain, so making
+	// gemini/v1 the terminal stage here matches the stage records the
+	// test then writes.
 	if err := h.Store.PutJob(ctx, store.JobRecord{
 		JobID:     "job_status",
 		Status:    store.JobStatusRunning,
 		InputURI:  "s3://bkt/jobs/job_status/input.pdf",
 		PageCount: 3,
 		UpdatedAt: "2026-06-26T00:00:00Z",
+		ChainID:   "test-gemini-only",
+		Chain: []pipeline.StageSpec{
+			{Name: "gemini", Version: "v1", QueueName: "gemini"},
+		},
 	}); err != nil {
 		t.Fatalf("seed job: %v", err)
 	}
