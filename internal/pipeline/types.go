@@ -10,6 +10,18 @@ type StepInput struct {
 	PreviousURI     string            `json:"previous_uri,omitempty"`
 	PromptProfileID string            `json:"prompt_profile_id,omitempty"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
+
+	// Chain and ChainIdx carry the job's frozen ChainSpec through the
+	// SQS hops (SPEC §S10). SubmitPages projects the chain into the
+	// per-page StepInput at ChainIdx=0; each Executor enqueues the
+	// next message with ChainIdx incremented. A stage at index N
+	// enqueues to Chain[N+1].QueueName; when N+1 == len(Chain) the
+	// stage is terminal for this job. Messages without Chain (legacy
+	// or out-of-band tests) fall back to the Executor's env-driven
+	// NextStage so old in-flight messages continue to drain after a
+	// deploy.
+	Chain    []StageSpec `json:"chain,omitempty"`
+	ChainIdx int         `json:"chain_idx,omitempty"`
 }
 
 type StepOutput struct {

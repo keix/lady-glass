@@ -96,6 +96,11 @@ normalize_card_statement/v1 → drops phantom schedule rows + zero-amount rows
                               (see internal/stage/normalize/cardstatement)
 ```
 
+### Chain registry
+A chain is a named processing plan. Multiple chains can coexist in the same Lady Glass deployment, such as `credit_card_statement_v1`, `receipt_v1`, or experimental chains.
+
+When a job is created, the selected `ChainSpec` is resolved and frozen onto the `JobRecord`, so the job keeps following the chain it was born with even if the default chain changes later.
+
 ### Chain binding
 A job is bound to the chain it was created with. The resolved `ChainSpec` is frozen onto the `JobRecord` ([SPEC §S10](SPEC.md#s10-chain-binding)), so new deployments can add or promote chains without disturbing in-flight jobs.
 

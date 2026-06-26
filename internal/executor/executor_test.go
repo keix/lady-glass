@@ -119,6 +119,95 @@ func TestExecutor_NextStageMessageCarriesOriginalInputURI(t *testing.T) {
 	}
 }
 
+func TestExecutor_PrefersInboundChainOverEnvNextStage(t *testing.T) {
+	// When the inbound message carries a Chain, Executor MUST route
+	// to Chain[ChainIdx+1] instead of e.NextStage. This is the §S10
+	// compute-binding contract: the job's frozen chain rides on the
+	// SQS message and the env-driven fallback only kicks in for
+	// legacy messages that predate this feature.
+	ctx := context.Background()
+	objects := object.NewFileStore(t.TempDir())
+	st := store.NewMemoryStore()
+	q := queue.NewMemoryQueue()
+
+	calls := 0
+	step := &lineocr.Mock{Objects: objects, Calls: &calls}
+
+	ex := &executor.Executor{
+		Step: step,
+		// Env-driven fallback points at a queue that the test will
+		// fail if the Executor mistakenly uses it.
+		NextStage: &pipeline.StageSpec{Name: "env_wrong", Version: "v1", QueueName: "env_wrong"},
+		Store:     st,
+		Queue:     q,
+	}
+
+	in := pipeline.StepInput{
+		JobID:    "j_chain",
+		Page:     1,
+		InputURI: "s3://bkt/in.png",
+		Chain: []pipeline.StageSpec{
+			{Name: "line_ocr", Version: "v1", QueueName: "line_ocr"},
+			{Name: "normalize_paypay_statement", Version: "v1", QueueName: "normalize_paypay_statement"},
+		},
+		ChainIdx: 0,
+	}
+	if err := ex.Execute(ctx, in); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if _, leaked := q.Messages["env_wrong"]; leaked {
+		t.Fatalf("Executor routed to env fallback when message had a Chain: %+v", q.Messages)
+	}
+	msgs := q.Messages["normalize_paypay_statement"]
+	if len(msgs) != 1 {
+		t.Fatalf("normalize_paypay_statement messages = %d, want 1", len(msgs))
+	}
+	if msgs[0].ChainIdx != 1 {
+		t.Fatalf("forwarded ChainIdx = %d, want 1 (advanced)", msgs[0].ChainIdx)
+	}
+	if len(msgs[0].Chain) != 2 {
+		t.Fatalf("forwarded Chain length = %d, want 2 (preserved)", len(msgs[0].Chain))
+	}
+}
+
+func TestExecutor_TerminalChainStageDoesNotEnqueue(t *testing.T) {
+	// At the last position in the chain, the Executor MUST NOT
+	// enqueue anywhere, even if e.NextStage is configured. This is
+	// the read-side mirror of the routing rule: terminal stages on
+	// the chain are terminal regardless of the Lambda's env.
+	ctx := context.Background()
+	objects := object.NewFileStore(t.TempDir())
+	st := store.NewMemoryStore()
+	q := queue.NewMemoryQueue()
+
+	calls := 0
+	step := &lineocr.Mock{Objects: objects, Calls: &calls}
+
+	ex := &executor.Executor{
+		Step:      step,
+		NextStage: &pipeline.StageSpec{Name: "env_wrong", Version: "v1", QueueName: "env_wrong"},
+		Store:     st,
+		Queue:     q,
+	}
+
+	in := pipeline.StepInput{
+		JobID: "j_terminal",
+		Page:  1,
+		Chain: []pipeline.StageSpec{
+			{Name: "line_ocr", Version: "v1", QueueName: "line_ocr"},
+		},
+		ChainIdx: 0, // single-stage chain, this is the terminal index
+	}
+	if err := ex.Execute(ctx, in); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if len(q.Messages) != 0 {
+		t.Fatalf("terminal chain stage enqueued anyway: %+v", q.Messages)
+	}
+}
+
 // flakyStep fails on the first Run, then succeeds on subsequent calls.
 // Used to verify the failed → retry → succeeded state transition.
 type flakyStep struct {

@@ -189,27 +189,32 @@ A conforming implementation MUST:
 
 The contract operates on two layers:
 
-- *Read layer* (API status / result / aggregate): the JobRecord's
-  frozen chain MUST drive every read query against
-  `ListStagesByJob`. Changing the registry, or even rotating
-  through a deploy, MUST NOT change what an existing job's
-  status / result calls return.
-- *Compute layer* (per-page stage execution): the SQS message a
-  stage Lambda consumes carries `stage` and `version`; the
-  Lambda's idempotency key (S3) is built from those, so
-  succeeded-skip and result-URI paths remain correct. The
-  Lambda's choice of which queue to enqueue next is permitted to
-  remain Lambda-env-local in this spec revision — the operational
-  pattern for safely changing the chain is to deploy a new
-  parallel set of queues + Lambdas keyed by a new chain ID and
-  let the old chain's in-flight jobs drain through the retention
-  window defined in S9.
+- *Read layer* (API status / result / aggregate, SFN task input
+  projection): the JobRecord's frozen chain MUST drive every read
+  query against `ListStagesByJob`. Changing the registry, or even
+  rotating through a deploy, MUST NOT change what an existing
+  job's status / result calls return.
+- *Compute layer* (per-page stage execution): the frozen
+  `ChainSpec` MUST ride on every SQS message the workflow emits.
+  SubmitPages writes the chain onto the page-0 StepInput; each
+  consuming Lambda's Executor enqueues to `Chain[ChainIdx+1]`
+  rather than to any per-Lambda environment variable. A stage at
+  position N is terminal for this job iff N+1 == len(Chain). Read
+  and compute layers therefore agree on routing: the same frozen
+  list answers both "which stage record do reads consult" and
+  "which queue does the next hop land in".
+
+Implementations MAY retain an env-driven fallback (`NextStage`
+configured at Lambda startup) for messages enqueued before the
+on-message chain shipped — the fallback covers the SQS retention
+window during a rolling deploy. Messages carrying a Chain MUST
+take precedence over the fallback.
 
 Re-running the registry against the same chain ID after a code
 release that changed its definition is therefore safe for new
 jobs and inert for existing ones: the existing jobs continue to
-see their birth-time chain on every read, and the new jobs pick
-up the new chain on the next createJob.
+see their birth-time chain on every read AND on every compute
+hop, and the new jobs pick up the new chain on the next createJob.
 
 A future revision MAY make the chain ID a request parameter on
 POST /jobs so a single deployment can host multiple chains

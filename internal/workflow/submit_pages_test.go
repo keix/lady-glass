@@ -19,7 +19,7 @@ func TestSubmitPages_FansOutOneMessagePerPage(t *testing.T) {
 	in := workflow.SubmitPagesInput{
 		JobID:      "j1",
 		InputURI:   "s3://bkt/jobs/j1/input.pdf",
-		FirstQueue: "gemini",
+		Chain: []pipeline.StageSpec{{Name: "gemini", Version: "v1", QueueName: "gemini"}},
 		Pages: []string{
 			"s3://bkt/jobs/j1/pages/000001/input.png",
 			"s3://bkt/jobs/j1/pages/000002/input.png",
@@ -60,7 +60,7 @@ func TestSubmitPages_RecordsJobRunningWithPageCount(t *testing.T) {
 	in := workflow.SubmitPagesInput{
 		JobID:      "j_job",
 		InputURI:   "s3://bkt/jobs/j_job/input.pdf",
-		FirstQueue: "gemini",
+		Chain: []pipeline.StageSpec{{Name: "gemini", Version: "v1", QueueName: "gemini"}},
 		Pages:      []string{"a.png", "b.png"},
 	}
 
@@ -103,7 +103,7 @@ func TestSubmitPages_PreservesModeFromExistingJob(t *testing.T) {
 	if _, err := workflow.SubmitPages(ctx, workflow.SubmitPagesInput{
 		JobID:      "j_rendered",
 		InputURI:   "s3://bkt/jobs/j_rendered/input.pdf",
-		FirstQueue: "gemini",
+		Chain: []pipeline.StageSpec{{Name: "gemini", Version: "v1", QueueName: "gemini"}},
 		Pages:      []string{"page-1.pdf"},
 	}, st, q); err != nil {
 		t.Fatalf("submit: %v", err)
@@ -123,7 +123,7 @@ func TestSubmitPages_QueueErrorIsReturned(t *testing.T) {
 
 	in := workflow.SubmitPagesInput{
 		JobID:      "j2",
-		FirstQueue: "gemini",
+		Chain: []pipeline.StageSpec{{Name: "gemini", Version: "v1", QueueName: "gemini"}},
 		Pages:      []string{"a.png", "b.png"},
 	}
 
@@ -153,7 +153,7 @@ func TestSubmitPages_EmptyPagesProducesEmptyJob(t *testing.T) {
 
 	in := workflow.SubmitPagesInput{
 		JobID:      "empty",
-		FirstQueue: "gemini",
+		Chain: []pipeline.StageSpec{{Name: "gemini", Version: "v1", QueueName: "gemini"}},
 		Pages:      nil,
 	}
 
@@ -182,7 +182,7 @@ func TestSubmitPages_MissingJobIDIsAnError(t *testing.T) {
 	q := queue.NewMemoryQueue()
 
 	_, err := workflow.SubmitPages(context.Background(), workflow.SubmitPagesInput{
-		FirstQueue: "gemini",
+		Chain: []pipeline.StageSpec{{Name: "gemini", Version: "v1", QueueName: "gemini"}},
 		Pages:      []string{"a.png"},
 	}, st, q)
 	if err == nil {

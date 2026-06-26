@@ -63,8 +63,8 @@ func (e *Executor) Execute(ctx context.Context, in pipeline.StepInput) error {
 	}
 
 	nextStageName := ""
-	if e.NextStage != nil {
-		nextStageName = e.NextStage.Name
+	if next := resolveNextStage(in, e.NextStage); next != nil {
+		nextStageName = next.Name
 	}
 
 	if err := e.Store.MarkSucceeded(ctx, out, nextStageName); err != nil {
@@ -74,22 +74,46 @@ func (e *Executor) Execute(ctx context.Context, in pipeline.StepInput) error {
 	return e.enqueueNext(ctx, in, out.ResultURI)
 }
 
+// resolveNextStage prefers the chain projected into the message (SPEC
+// §S10): the job's frozen ChainSpec rides on every SQS hop, and the
+// next stage is just Chain[ChainIdx+1]. Messages without Chain fall
+// back to the Executor's env-driven NextStage so messages enqueued by
+// an older binary keep flowing.
+func resolveNextStage(in pipeline.StepInput, fallback *pipeline.StageSpec) *pipeline.StageSpec {
+	if len(in.Chain) > 0 {
+		idx := in.ChainIdx + 1
+		if idx >= len(in.Chain) {
+			return nil
+		}
+		next := in.Chain[idx]
+		return &next
+	}
+	return fallback
+}
+
 func (e *Executor) enqueueNext(ctx context.Context, in pipeline.StepInput, previousURI string) error {
-	if e.NextStage == nil {
+	next := resolveNextStage(in, e.NextStage)
+	if next == nil {
 		return nil
 	}
 
-	next := pipeline.StepInput{
+	outgoing := pipeline.StepInput{
 		JobID:           in.JobID,
 		DocumentID:      in.DocumentID,
 		Page:            in.Page,
-		Stage:           e.NextStage.Name,
-		Version:         e.NextStage.Version,
+		Stage:           next.Name,
+		Version:         next.Version,
 		InputURI:        in.InputURI,
 		PreviousURI:     previousURI,
 		PromptProfileID: in.PromptProfileID,
 		Metadata:        in.Metadata,
+		// Forward the chain so the consuming stage can dispatch its
+		// own next hop without re-reading JobRecord. The fallback path
+		// (no chain on the inbound message) carries no chain forward
+		// either — the receiving stage will rely on its own env.
+		Chain:    in.Chain,
+		ChainIdx: in.ChainIdx + 1,
 	}
 
-	return e.Queue.Send(ctx, e.NextStage.QueueName, next)
+	return e.Queue.Send(ctx, next.QueueName, outgoing)
 }

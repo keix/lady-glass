@@ -200,19 +200,23 @@ func (h *Handler) startJob(ctx context.Context, _ events.APIGatewayV2HTTPRequest
 	if err != nil {
 		return errorResponse(500, ErrCodeInternalError, fmt.Sprintf("resolve chain: %v", err)), nil
 	}
-	first := chainSpec.Stages[0]
 	final := chainSpec.Stages[len(chainSpec.Stages)-1]
 
 	// pages is only consumed on the passthrough branch (the rendered
 	// branch projects $.render_result.pages instead); send the source
 	// URI as a single-element placeholder so the ModeChoice can
 	// resolve either way.
+	//
+	// chain is the job's frozen ChainSpec (SPEC §S10); the ASL passes
+	// it through to SubmitPages, which embeds it on every per-page
+	// SQS message, and CheckPages / Merge pull final_stage /
+	// final_version out of it for read queries.
 	execInput, err := json.Marshal(map[string]any{
 		"job_id":        jobID,
 		"input_uri":     rec.InputURI,
 		"pages":         []string{rec.InputURI},
 		"mode":          mode,
-		"first_queue":   first.QueueName,
+		"chain":         chainSpec.Stages,
 		"final_stage":   final.Name,
 		"final_version": final.Version,
 	})

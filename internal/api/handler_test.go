@@ -176,15 +176,21 @@ func TestStartJob_KicksSFnExecution(t *testing.T) {
 		t.Fatalf("execution_arn = %q", out.ExecutionARN)
 	}
 
-	// SFn input round-trips the first-queue / last-stage / last-version
-	// projected from the JobRecord's frozen Chain.
+	// SFn input round-trips the frozen Chain (so SubmitPages can
+	// project it into per-page messages) plus the terminal
+	// final_stage / final_version pair CheckPages and Merge use.
 	var sfnInput map[string]any
 	_ = json.Unmarshal([]byte(sf.lastInput), &sfnInput)
 	if sfnInput["job_id"] != "job_x" {
 		t.Fatalf("sfn input job_id = %v", sfnInput["job_id"])
 	}
-	if sfnInput["first_queue"] != "line_ocr_q" {
-		t.Fatalf("sfn input first_queue = %v, want line_ocr_q", sfnInput["first_queue"])
+	chainAny, ok := sfnInput["chain"].([]any)
+	if !ok || len(chainAny) != 2 {
+		t.Fatalf("sfn input chain = %v, want 2-stage list", sfnInput["chain"])
+	}
+	firstStage := chainAny[0].(map[string]any)
+	if firstStage["queue_name"] != "line_ocr_q" {
+		t.Fatalf("sfn input chain[0].queue_name = %v, want line_ocr_q", firstStage["queue_name"])
 	}
 	if sfnInput["final_stage"] != "gemini" || sfnInput["final_version"] != "v1" {
 		t.Fatalf("sfn input final = %v / %v", sfnInput["final_stage"], sfnInput["final_version"])

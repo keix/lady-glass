@@ -25,10 +25,14 @@ type SubmitPagesInput struct {
 	// number is derived from the slice index (1-based); page N is at
 	// Pages[N-1].
 	Pages []string `json:"pages"`
-	// FirstQueue is the logical queue name of the first stage in the
-	// chain (matches a key in SQSQueue.URLs). The page messages are
-	// enqueued here.
-	FirstQueue string `json:"first_queue"`
+	// Chain is the job's frozen ChainSpec (SPEC §S10), projected here
+	// by the API at startJob and forwarded by the SFN ASL. SubmitPages
+	// enqueues each page into Chain[0].QueueName with the chain
+	// embedded in the StepInput, so every downstream Lambda routes
+	// based on this list rather than its own env. Empty Chain is
+	// rejected — the API populates it from the JobRecord on every
+	// job.
+	Chain []pipeline.StageSpec `json:"chain"`
 }
 
 // SubmitPagesOutput is the SFN task result. Step Functions uses
@@ -47,11 +51,12 @@ func SubmitPages(ctx context.Context, in SubmitPagesInput, st store.Store, q que
 	if in.JobID == "" {
 		return SubmitPagesOutput{}, fmt.Errorf("submit_pages: empty job_id")
 	}
-	if in.FirstQueue == "" {
-		return SubmitPagesOutput{}, fmt.Errorf("submit_pages: empty first_queue")
+	if len(in.Chain) == 0 {
+		return SubmitPagesOutput{}, fmt.Errorf("submit_pages: empty chain (SPEC §S10 requires the job's ChainSpec on every submit)")
 	}
 
 	pageCount := len(in.Pages)
+	first := in.Chain[0]
 
 	existing, err := st.GetJob(ctx, in.JobID)
 	if err != nil {
@@ -66,6 +71,8 @@ func SubmitPages(ctx context.Context, in SubmitPagesInput, st store.Store, q que
 	}
 	if existing != nil {
 		job.Mode = existing.Mode
+		job.ChainID = existing.ChainID
+		job.Chain = existing.Chain
 	}
 	if err := st.PutJob(ctx, job); err != nil {
 		return SubmitPagesOutput{}, fmt.Errorf("submit_pages: put job: %w", err)
@@ -76,9 +83,13 @@ func SubmitPages(ctx context.Context, in SubmitPagesInput, st store.Store, q que
 		msg := pipeline.StepInput{
 			JobID:    in.JobID,
 			Page:     page,
+			Stage:    first.Name,
+			Version:  first.Version,
 			InputURI: pageURI,
+			Chain:    in.Chain,
+			ChainIdx: 0,
 		}
-		if err := q.Send(ctx, in.FirstQueue, msg); err != nil {
+		if err := q.Send(ctx, first.QueueName, msg); err != nil {
 			return SubmitPagesOutput{}, fmt.Errorf("submit_pages: enqueue page %d: %w", page, err)
 		}
 	}
