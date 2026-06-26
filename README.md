@@ -93,6 +93,22 @@ After import, the rest of the pipeline works with the stored artifact URI.
 * **Step Functions does not chain AI steps.** Page-level retry and ack stay inside SQS so workflow state transitions don't multiply with page count, and so external API limits don't leak into the workflow.
 * **CheckPages is read-only.** It polls DynamoDB and either keeps waiting, merges, or fails the job. No work happens inside the workflow itself beyond orchestration.
 
+### Idempotency
+
+Lady Glass treats idempotency as part of the control plane.
+
+Each page-level stage is keyed by:
+
+```text
+job_id + page + stage + version
+```
+
+Before a stage runs, DynamoDB is checked for the stage record. If the same stage has already succeeded, the external provider call is skipped and the stored artifact is reused.
+
+This makes SQS redelivery, Lambda retry, and workflow retry safe: retries collapse to the same succeeded stage record instead of re-billing the same AI operation.
+
+DynamoDB records are temporary execution state. Stage records, idempotency keys, and job events are written with TTL attributes; the retention window defines how long idempotency is guaranteed for completed jobs.
+
 ### Execution modes
 
 Lady Glass supports two workflow modes selected per job at submission time.
