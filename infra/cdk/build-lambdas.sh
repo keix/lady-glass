@@ -20,6 +20,7 @@ LAMBDAS=(
     merge-lambda
     mark-job-failed-lambda
     api-lambda
+    render-pages-lambda
 )
 
 rm -rf "$OUT"
