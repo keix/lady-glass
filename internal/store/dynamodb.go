@@ -153,6 +153,7 @@ func (s *DynamoStore) PutJob(ctx context.Context, rec JobRecord) error {
 		InputURI:  rec.InputURI,
 		ResultURI: rec.ResultURI,
 		PageCount: rec.PageCount,
+		Mode:      rec.Mode,
 		Error:     rec.Error,
 		UpdatedAt: nowRFC3339(),
 	}
@@ -262,6 +263,7 @@ type jobItem struct {
 	InputURI  string `dynamodbav:"input_uri,omitempty"`
 	ResultURI string `dynamodbav:"result_uri,omitempty"`
 	PageCount int    `dynamodbav:"page_count,omitempty"`
+	Mode      string `dynamodbav:"mode,omitempty"`
 	Error     string `dynamodbav:"error,omitempty"`
 
 	UpdatedAt string `dynamodbav:"updated_at"`
@@ -274,6 +276,7 @@ func (i jobItem) toRecord() JobRecord {
 		InputURI:  i.InputURI,
 		ResultURI: i.ResultURI,
 		PageCount: i.PageCount,
+		Mode:      i.Mode,
 		Error:     i.Error,
 		UpdatedAt: i.UpdatedAt,
 	}
