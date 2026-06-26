@@ -4,7 +4,10 @@ import (
 	"path/filepath"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2"
+	awsapigatewayv2integrations "github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2integrations"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
 	awslambdasources "github.com/aws/aws-cdk-go/awscdk/v2/awslambdaeventsources"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
@@ -243,6 +246,56 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	merge.GrantInvoke(stateMachine)
 	markFailed.GrantInvoke(stateMachine)
 
+	// --- API Lambda + HTTP API -------------------------------------------
+
+	// Shared API key. Operator provisions out-of-band before deploy:
+	//   aws ssm put-parameter --type String --name /lady-glass/api-key \
+	//       --value "$(openssl rand -hex 32)"
+	apiKey := awsssm.StringParameter_ValueForStringParameter(
+		stack,
+		jsii.String("/lady-glass/api-key"),
+		nil,
+	)
+
+	apiLambda := makeLambda("ApiLambda", "api-lambda", &map[string]*string{
+		"LADY_GLASS_TABLE":             table.TableName(),
+		"LADY_GLASS_BUCKET":            bucket.BucketName(),
+		"LADY_GLASS_STATE_MACHINE_ARN": stateMachine.StateMachineArn(),
+		"LADY_GLASS_API_KEY":           apiKey,
+		"LADY_GLASS_FIRST_QUEUE":       jsii.String("gemini"),
+		"LADY_GLASS_FINAL_STAGE":       jsii.String("gemini"),
+		"LADY_GLASS_FINAL_VERSION":     jsii.String("v1"),
+		"LADY_GLASS_UPLOAD_EXPIRES_MIN": jsii.String("15"),
+	})
+	table.GrantReadWriteData(apiLambda)
+	bucket.GrantReadWrite(apiLambda, nil)
+	stateMachine.GrantStartExecution(apiLambda)
+	// Presigned PUT URL signing requires the issuing role to itself
+	// hold s3:PutObject on the target; GrantReadWrite covers it but
+	// be explicit so a future grant trim does not silently break
+	// presign.
+	apiLambda.AddToRolePolicy(awsiam.NewPolicyStatement(&awsiam.PolicyStatementProps{
+		Actions:   jsii.Strings("s3:PutObject"),
+		Resources: jsii.Strings(*bucket.BucketArn() + "/*"),
+	}))
+
+	httpApi := awsapigatewayv2.NewHttpApi(stack, jsii.String("LadyGlassApi"), &awsapigatewayv2.HttpApiProps{
+		ApiName:     jsii.String("LadyGlassApi"),
+		Description: jsii.String("HTTP API in front of the Lady Glass document workflow."),
+	})
+
+	httpApi.AddRoutes(&awsapigatewayv2.AddRoutesOptions{
+		Path: jsii.String("/{proxy+}"),
+		Methods: &[]awsapigatewayv2.HttpMethod{
+			awsapigatewayv2.HttpMethod_ANY,
+		},
+		Integration: awsapigatewayv2integrations.NewHttpLambdaIntegration(
+			jsii.String("ApiLambdaIntegration"),
+			apiLambda,
+			nil,
+		),
+	})
+
 	// --- Operator-visible outputs ----------------------------------------
 
 	awscdk.NewCfnOutput(stack, jsii.String("TableName"), &awscdk.CfnOutputProps{
@@ -256,6 +309,9 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	})
 	awscdk.NewCfnOutput(stack, jsii.String("StateMachineArn"), &awscdk.CfnOutputProps{
 		Value: stateMachine.StateMachineArn(),
+	})
+	awscdk.NewCfnOutput(stack, jsii.String("ApiUrl"), &awscdk.CfnOutputProps{
+		Value: httpApi.Url(),
 	})
 
 	return stack

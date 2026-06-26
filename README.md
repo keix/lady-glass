@@ -63,15 +63,15 @@ Step Functions owns the document workflow. SQS and Lambda own the per-page AI st
 | SQS + Lambda   | Per-page AI stage chain: one queue + one Lambda per stage        |
 | DynamoDB       | Stage state, idempotency keys, events — the control plane        |
 | S3             | Page images, stage results, merged output — the data plane       |
+| API Gateway    | Job control: upload URLs, execution start, status, and results   |
 
-### Every operation in Lady Glass is a stage
-A stage is intentionally small: it receives one input, writes one output, and may enqueue the next stage.
 
-It can be an OCR call, an AI extraction, a local transform, an import step, or a merge step. The executor treats them all the same.
+### Every document operation in Lady Glass is a stage
+A stage is a small unit of document processing. It may import a document, render pages, call OCR or AI, run a local transform, validate output, or merge results.
 
+Step Functions manages the execution of the document workflow. SQS and Lambda execute page-level stages, while DynamoDB records state and idempotency.
 
 ### Sources
-
 Lady Glass can import documents from multiple sources.
 
 Sources are treated as import stages. A source stage reads an external document and stores a fixed copy in the object store before the document enters the pipeline.
@@ -92,6 +92,15 @@ After import, the rest of the pipeline works with the stored artifact URI.
 * **Idempotency belongs at the stage level.** `job_id + page + stage + version` is the key. A redelivered SQS message, a Lambda retry, or a Step Functions re-execution all collapse to the same "succeeded → skip" path in DynamoDB.
 * **Step Functions does not chain AI steps.** Page-level retry and ack stay inside SQS so workflow state transitions don't multiply with page count, and so external API limits don't leak into the workflow.
 * **CheckPages is read-only.** It polls DynamoDB and either keeps waiting, merges, or fails the job. No work happens inside the workflow itself beyond orchestration.
+
+## AWS Deploy
+Lady Glass infrastructure is defined with AWS CDK.
+
+```bash
+cdk deploy
+```
+
+This deploys the SQS, Lambda, DynamoDB, S3, and Step Functions resources used by the cloud pipeline.
 
 ## Local Development
 Lady Glass can run locally without AWS.

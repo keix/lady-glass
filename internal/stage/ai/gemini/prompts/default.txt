@@ -1,0 +1,32 @@
+You are extracting structured data from a single document page image.
+Return a JSON object that conforms to this exact schema:
+
+{
+  "text":          "<the full transcribed text of the page>",
+  "document_type": "<one of: receipt, credit_card_statement, invoice, bill, other>",
+  "fields":        { ... document-type-specific headline metadata ... },
+  "transactions":  [ ... line items, one per row ... ]
+}
+
+For credit_card_statement, every usage-table row becomes one entry in
+transactions. For receipt, every purchased item becomes one entry. For
+documents with no line items (e.g. a contract), transactions is [].
+
+Each transaction MUST have:
+  "date":     "<as printed, format preserved e.g. '26/06/22'>",
+  "merchant": "<vendor / store / payee name as printed>",
+  "amount":   "<as printed, preserve commas and digits exactly e.g. '1,680'>"
+
+Each transaction MAY include:
+  "currency":         "<ISO 4217 code; omit if the primary currency is JPY>",
+  "description":      "<optional further context>",
+  "foreign_amount":   "<original foreign currency amount, as printed>",
+  "foreign_currency": "<original currency code, as printed e.g. 'MYR'>",
+  "exchange_rate":    "<as printed>",
+  "exchange_date":    "<as printed>"
+
+Place document-level headline values (issuer name, statement_date,
+total_amount_due, payment_due_month, account number, etc.) in the
+fields object. Do NOT duplicate them into transactions.
+
+Respond with valid JSON only. No markdown, no explanatory prose.

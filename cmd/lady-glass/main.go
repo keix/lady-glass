@@ -5,18 +5,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/keix/lady-glass/internal/stage/ai/gemini"
-	"github.com/keix/lady-glass/internal/stage/ai/lineocr"
+	"github.com/keix/lady-glass/internal/api"
+	"github.com/keix/lady-glass/internal/client"
 	"github.com/keix/lady-glass/internal/executor"
 	"github.com/keix/lady-glass/internal/object"
 	"github.com/keix/lady-glass/internal/pipeline"
 	"github.com/keix/lady-glass/internal/queue"
+	"github.com/keix/lady-glass/internal/stage/ai/gemini"
+	"github.com/keix/lady-glass/internal/stage/ai/lineocr"
 	"github.com/keix/lady-glass/internal/store"
 )
 
@@ -26,15 +30,24 @@ func main() {
 	}
 
 	ctx := context.Background()
+	rest := os.Args[2:]
 
 	switch os.Args[1] {
 	case "dev":
 		runDev(ctx)
 	case "gemini":
-		if len(os.Args) < 3 {
+		if len(rest) < 1 {
 			usage()
 		}
-		runGemini(ctx, os.Args[2])
+		runGemini(ctx, rest[0])
+	case "submit":
+		runSubmit(ctx, rest)
+	case "status":
+		runStatus(ctx, rest)
+	case "result":
+		runResult(ctx, rest)
+	case "aggregate":
+		runAggregate(ctx, rest)
 	default:
 		usage()
 	}
@@ -42,8 +55,14 @@ func main() {
 
 func usage() {
 	fmt.Println("usage:")
-	fmt.Println("  lady-glass dev               run the mock line_ocr → gemini chain locally")
-	fmt.Println("  lady-glass gemini <file>     smoke-test the real Gemini Step against a local image or PDF")
+	fmt.Println("  lady-glass dev                              run the local mock chain")
+	fmt.Println("  lady-glass gemini <file>                    smoke-test real Gemini against a local file")
+	fmt.Println("  lady-glass submit <file> [--json]           upload + start a job")
+	fmt.Println("  lady-glass status <job_id> [--json]         poll job status")
+	fmt.Println("  lady-glass result <job_id>                  fetch merged extraction (JSON)")
+	fmt.Println("  lady-glass aggregate <job_id> --merchant X [--json]   merchant rollup")
+	fmt.Println()
+	fmt.Println("Cloud commands read LADY_GLASS_API_URL and LADY_GLASS_API_TOKEN from .env or env.")
 	os.Exit(1)
 }
 
@@ -244,4 +263,196 @@ func contentTypeForExt(ext string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+// --- Cloud commands --------------------------------------------------
+
+// newAPIClient builds a client.Client from .env / process env. Used by
+// every cloud subcommand. Exits with a clear message if either env var
+// is missing.
+func newAPIClient() *client.Client {
+	if err := loadDotenv(".env"); err != nil {
+		log.Fatalf("load .env: %v", err)
+	}
+	baseURL := firstNonEmpty(os.Getenv("LADY_GLASS_API_URL"))
+	token := firstNonEmpty(os.Getenv("LADY_GLASS_API_TOKEN"))
+	if baseURL == "" || token == "" {
+		log.Fatal("LADY_GLASS_API_URL and LADY_GLASS_API_TOKEN must be set in .env or env")
+	}
+	return client.New(baseURL, token)
+}
+
+// runSubmit uploads a local file and starts the SFn workflow.
+func runSubmit(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("submit", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "emit JSON output")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		log.Fatal("usage: lady-glass submit <file> [--json]")
+	}
+	path := fs.Arg(0)
+
+	c := newAPIClient()
+	filename := filepath.Base(path)
+	contentType := contentTypeForExt(filepath.Ext(filename))
+
+	created, err := c.CreateJob(ctx, api.CreateJobRequest{
+		Filename:    filename,
+		ContentType: contentType,
+	})
+	if err != nil {
+		log.Fatalf("create job: %v", err)
+	}
+
+	if err := c.UploadFile(ctx, created.UploadURL, path, contentType); err != nil {
+		log.Fatalf("upload: %v", err)
+	}
+
+	started, err := c.StartJob(ctx, created.JobID)
+	if err != nil {
+		log.Fatalf("start job: %v", err)
+	}
+
+	if *jsonOut {
+		printJSON(map[string]any{
+			"job_id":        started.JobID,
+			"execution_arn": started.ExecutionARN,
+		})
+		return
+	}
+	fmt.Printf("created job: %s\n", created.JobID)
+	fmt.Printf("uploaded:    %s\n", filename)
+	fmt.Printf("started:     %s\n", started.ExecutionARN)
+}
+
+// runStatus prints the current job status snapshot.
+func runStatus(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "emit JSON output")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		log.Fatal("usage: lady-glass status <job_id> [--json]")
+	}
+	jobID := fs.Arg(0)
+
+	c := newAPIClient()
+	out, err := c.GetJobStatus(ctx, jobID)
+	if err != nil {
+		log.Fatalf("status: %v", err)
+	}
+
+	if *jsonOut {
+		printJSON(out)
+		return
+	}
+	fmt.Printf("job:     %s\n", out.JobID)
+	fmt.Printf("status:  %s\n", out.Status)
+	fmt.Printf("pages:   %d (succeeded=%d failed=%d pending=%d)\n",
+		out.PageCount, out.SucceededCount, out.FailedCount, out.PendingCount)
+	if out.InputURI != "" {
+		fmt.Printf("input:   %s\n", out.InputURI)
+	}
+	if out.ResultURI != "" {
+		fmt.Printf("result:  %s\n", out.ResultURI)
+	}
+	if out.Error != "" {
+		fmt.Printf("error:   %s\n", out.Error)
+	}
+	if out.UpdatedAt != "" {
+		fmt.Printf("updated: %s\n", out.UpdatedAt)
+	}
+}
+
+// runResult fetches the typed merged result and pretty-prints it.
+func runResult(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("result", flag.ExitOnError)
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		log.Fatal("usage: lady-glass result <job_id>")
+	}
+	jobID := fs.Arg(0)
+
+	c := newAPIClient()
+	out, err := c.GetJobResult(ctx, jobID)
+	if err != nil {
+		if client.IsCode(err, api.ErrCodeJobNotReady) {
+			fmt.Println("job is not ready yet — wait and retry")
+			os.Exit(2)
+		}
+		log.Fatalf("result: %v", err)
+	}
+	printJSON(out)
+}
+
+// runAggregate filters transactions by merchant and prints the rollup.
+func runAggregate(ctx context.Context, args []string) {
+	fs := flag.NewFlagSet("aggregate", flag.ExitOnError)
+	merchant := fs.String("merchant", "", "exact-match merchant filter")
+	jsonOut := fs.Bool("json", false, "emit JSON output")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 || *merchant == "" {
+		log.Fatal("usage: lady-glass aggregate <job_id> --merchant <name> [--json]")
+	}
+	jobID := fs.Arg(0)
+
+	c := newAPIClient()
+	out, err := c.AggregateJob(ctx, jobID, api.AggregateRequest{Merchant: *merchant})
+	if err != nil {
+		var apiErr *client.Error
+		if errors.As(err, &apiErr) && apiErr.Code == api.ErrCodeJobNotReady {
+			fmt.Println("job is not ready yet — wait and retry")
+			os.Exit(2)
+		}
+		log.Fatalf("aggregate: %v", err)
+	}
+
+	if *jsonOut {
+		printJSON(out)
+		return
+	}
+	fmt.Printf("merchant: %s\n", out.Merchant)
+	fmt.Printf("count:    %d\n", out.Count)
+	fmt.Printf("total:    %s 円\n", formatThousands(out.TotalJPY))
+	if len(out.Transactions) > 0 {
+		fmt.Println()
+		for _, tx := range out.Transactions {
+			fmt.Printf("  %s  p%d  %s  %s\n", tx.Date, tx.Page, tx.Merchant, tx.Amount)
+		}
+	}
+}
+
+// --- output helpers --------------------------------------------------
+
+func printJSON(v any) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		log.Fatalf("encode: %v", err)
+	}
+	fmt.Print(buf.String())
+}
+
+// formatThousands inserts commas every three digits — "1234567" → "1,234,567".
+func formatThousands(n int) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	first := len(s) % 3
+	if first > 0 {
+		b.WriteString(s[:first])
+		if len(s) > first {
+			b.WriteByte(',')
+		}
+	}
+	for i := first; i < len(s); i += 3 {
+		b.WriteString(s[i : i+3])
+		if i+3 < len(s) {
+			b.WriteByte(',')
+		}
+	}
+	return b.String()
 }
