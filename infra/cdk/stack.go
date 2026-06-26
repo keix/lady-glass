@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
 	awslambdasources "github.com/aws/aws-cdk-go/awscdk/v2/awslambdaeventsources"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awss3"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsssm"
@@ -70,11 +71,11 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	})
 
 	geminiQueue := awssqs.NewQueue(stack, jsii.String("GeminiQueue"), &awssqs.QueueProps{
-		// Visibility timeout must comfortably exceed the Lambda timeout;
-		// the executor's "succeeded → skip" path handles redelivery
-		// either way, so a generous value here only costs latency on
-		// genuinely stuck messages.
-		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(120)),
+		// Visibility timeout must be ≥ Lambda timeout × ~1.5 (AWS
+		// guidance) so a slow Gemini call cannot end up with the same
+		// message redelivered to a second worker mid-flight. Lambda
+		// timeout is 300s below, so 600s gives a 2× margin.
+		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(600)),
 		DeadLetterQueue: &awssqs.DeadLetterQueue{
 			Queue:           geminiDLQ,
 			MaxReceiveCount: jsii.Number(5),
@@ -109,7 +110,17 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 			Handler:      jsii.String("bootstrap"),
 			Code:         awslambda.Code_FromAsset(jsii.String(assetPath), nil),
 			MemorySize:   jsii.Number(512),
-			Timeout:      awscdk.Duration_Seconds(jsii.Number(60)),
+			// 300s gives the Gemini multimodal call (which can run 30-60s
+			// on dense PDFs) enough headroom to complete and to retry
+			// inside the SDK if it returns 503/504. The non-Gemini
+			// workflow Lambdas finish in <1s so they pay nothing for the
+			// generous timeout — billing is on actual duration.
+			Timeout: awscdk.Duration_Seconds(jsii.Number(300)),
+			// Drop CloudWatch Logs after a week so log storage cannot
+			// quietly accumulate; the default is infinite retention.
+			// A week is enough for "yesterday's run failed, why" without
+			// hoarding a year of stack traces.
+			LogRetention: awslogs.RetentionDays_ONE_WEEK,
 			Environment:  env,
 		})
 	}
