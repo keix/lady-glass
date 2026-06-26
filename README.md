@@ -162,7 +162,7 @@ POST /jobs                              open a job; returns a presigned upload U
 POST /jobs/{id}/start                   kick off the SFn workflow once uploaded
 GET  /jobs/{id}                         status snapshot with per-page counts
 GET  /jobs/{id}/result                  merged typed extraction (JSON)
-GET  /jobs/{id}/aggregate?merchant=X    matching transactions + JPY total
+GET  /jobs/{id}/aggregate?<filter>=<v>  single-dimension rollup (merchant=, foreign_currency=, …)
 ```
 
 The `lady-glass` CLI wraps these endpoints — see Local Development below.
