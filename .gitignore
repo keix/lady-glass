@@ -1,6 +1,7 @@
 /out/
 /.result/
 /docs/
+/scripts/
 /testdata/private/
 /infra/cdk/bin/
 /infra/cdk/cdk.out/

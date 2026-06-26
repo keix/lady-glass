@@ -64,8 +64,28 @@ Step Functions owns the document workflow. SQS and Lambda own the per-page AI st
 | DynamoDB       | Stage state, idempotency keys, events — the control plane        |
 | S3             | Page images, stage results, merged output — the data plane       |
 
-### Every AI operation in Lady Glass is a stage
+### Every operation in Lady Glass is a stage
 A stage is intentionally small: it receives one input, writes one output, and may enqueue the next stage.
+
+It can be an OCR call, an AI extraction, a local transform, an import step, or a merge step. The executor treats them all the same.
+
+
+### Sources
+
+Lady Glass can import documents from multiple sources.
+
+Sources are treated as import stages. A source stage reads an external document and stores a fixed copy in the object store before the document enters the pipeline.
+
+Examples of sources:
+
+```text
+local file
+S3
+Google Drive
+OneDrive
+```
+
+After import, the rest of the pipeline works with the stored artifact URI.
 
 ### Why split this way
 * **AI providers have different bottlenecks.** Each stage owns its own queue, so each Lambda sets its own reserved concurrency — a low-throughput provider cannot starve a high-throughput one.
@@ -73,57 +93,11 @@ A stage is intentionally small: it receives one input, writes one output, and ma
 * **Step Functions does not chain AI steps.** Page-level retry and ack stay inside SQS so workflow state transitions don't multiply with page count, and so external API limits don't leak into the workflow.
 * **CheckPages is read-only.** It polls DynamoDB and either keeps waiting, merges, or fails the job. No work happens inside the workflow itself beyond orchestration.
 
-## Core Concepts
-Lady Glass is built around small, retry-safe stages.
-
-A stage receives one page, performs one piece of work, stores its result, and optionally enqueues the next stage.
-
-Examples of stages:
-
-```text
-tesseract_ocr
-gemini_ocr_extract
-gemini_extract
-line_ocr
-```
-
-Each stage is identified by:
-
-```text
-job_id + page + stage + version
-```
-
-For example:
-
-```text
-job_123:page:000017:gemini_extract:v1
-```
-
-This key is used for idempotency. If the same message is delivered again after the stage has already succeeded, Lady Glass skips the external API call and continues from the stored result.
-
-Stage outputs are stored as artifacts. DynamoDB stores only the state and pointers to those artifacts.
-
-```text
-DynamoDB:
-  status
-  idempotency key
-  stage name
-  version
-  result URI
-  timestamps
-
-S3:
-  page images
-  OCR text
-  AI responses
-  structured JSON
-  merged output
-```
-
-In local development, the same model is used with a file-based object store and an in-memory state store.
-
 ## Local Development
 Lady Glass can run locally without AWS.
+
+In local development, the same stage model is used with a file-based object store and an in-memory state store.
+
 
 ```bash
 nix develop
@@ -138,4 +112,5 @@ Lady Glass is currently a work in progress.
 The local mock pipeline is implemented. Cloud adapters and real AI stages will be added incrementally.
 
 ## License
-Lady Glass is licensed under the MIT License.
+Lady Glass is licensed under the MIT License.  
+Copyright (c) 2026 Kei Sawamura a.k.a. Master *void  
