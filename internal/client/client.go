@@ -147,12 +147,13 @@ func (c *Client) GetJobResult(ctx context.Context, jobID string) (api.ResultResp
 	return out, nil
 }
 
-// AggregateJob calls GET /jobs/{id}/aggregate with the merchant
-// filter expressed as a query parameter.
+// AggregateJob calls GET /jobs/{id}/aggregate with the single filter
+// dimension expressed as a query parameter (the API rejects requests
+// without a filter or with more than one filter).
 func (c *Client) AggregateJob(ctx context.Context, jobID string, req api.AggregateRequest) (api.AggregateResponse, error) {
 	q := url.Values{}
-	if req.Merchant != "" {
-		q.Set("merchant", req.Merchant)
+	if req.FilterKey != "" {
+		q.Set(req.FilterKey, req.FilterValue)
 	}
 	path := "/jobs/" + url.PathEscape(jobID) + "/aggregate"
 	if encoded := q.Encode(); encoded != "" {
