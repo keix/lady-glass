@@ -109,11 +109,37 @@ lady-glass submit ./long_report.pdf --mode rendered     # per-page split
 ## AWS Deploy
 Lady Glass infrastructure is defined with AWS CDK.
 
+Before the first deploy, provision two SSM parameters:
+
 ```bash
-cdk deploy
+aws ssm put-parameter --type String --name /lady-glass/gemini-api-key \
+  --value "<your Google AI Studio key>"
+aws ssm put-parameter --type String --name /lady-glass/api-key \
+  --value "$(openssl rand -hex 32)"
 ```
 
-This deploys the SQS, Lambda, DynamoDB, S3, and Step Functions resources used by the cloud pipeline.
+Then build the Go Lambda binaries and deploy:
+
+```bash
+./infra/cdk/build-lambdas.sh
+cd infra/cdk && cdk deploy
+```
+
+This deploys the SQS, Lambda, DynamoDB, S3, API Gateway, and Step Functions resources used by the cloud pipeline. The stack outputs `ApiUrl`; put it and the API key into `.env` as `LADY_GLASS_API_URL` and `LADY_GLASS_API_TOKEN` so the CLI can reach the deployed stack.
+
+## API
+
+Lady Glass exposes five HTTP endpoints fronted by API Gateway. Auth is a shared `X-Api-Key` header. See [`internal/api/types.go`](internal/api/types.go) for the full request / response contract.
+
+```text
+POST /jobs                              open a job; returns a presigned upload URL
+POST /jobs/{id}/start                   kick off the SFn workflow once uploaded
+GET  /jobs/{id}                         status snapshot with per-page counts
+GET  /jobs/{id}/result                  merged typed extraction (JSON)
+GET  /jobs/{id}/aggregate?merchant=X    matching transactions + JPY total
+```
+
+The `lady-glass` CLI wraps these endpoints — see Local Development below.
 
 ## Local Development
 Lady Glass can run locally without AWS.
