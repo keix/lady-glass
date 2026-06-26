@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 
@@ -83,14 +85,15 @@ func RenderPages(ctx context.Context, in RenderPagesInput, obj object.Store) (Re
 	if err != nil {
 		return RenderPagesOutput{}, fmt.Errorf("render_pages: read output dir: %w", err)
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
+	pageFiles, err := sortedPDFCPUPageFiles(entries)
+	if err != nil {
+		return RenderPagesOutput{}, err
+	}
 
-	pages := make([]string, 0, len(entries))
-	for i, ent := range entries {
+	pages := make([]string, 0, len(pageFiles))
+	for i, pageFile := range pageFiles {
 		page := i + 1
-		fullPath := filepath.Join(outDir, ent.Name())
+		fullPath := filepath.Join(outDir, pageFile.name)
 		pageBody, err := os.ReadFile(fullPath)
 		if err != nil {
 			return RenderPagesOutput{}, fmt.Errorf("render_pages: read page %d: %w", page, err)
@@ -104,4 +107,41 @@ func RenderPages(ctx context.Context, in RenderPagesInput, obj object.Store) (Re
 	}
 
 	return RenderPagesOutput{JobID: in.JobID, Pages: pages}, nil
+}
+
+type pdfcpuPageFile struct {
+	name string
+	page int
+}
+
+func sortedPDFCPUPageFiles(entries []os.DirEntry) ([]pdfcpuPageFile, error) {
+	files := make([]pdfcpuPageFile, 0, len(entries))
+	for _, ent := range entries {
+		if ent.IsDir() {
+			return nil, fmt.Errorf("render_pages: unexpected directory in split output: %s", ent.Name())
+		}
+		page, err := pdfcpuPageNumber(ent.Name())
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, pdfcpuPageFile{name: ent.Name(), page: page})
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].page < files[j].page
+	})
+	return files, nil
+}
+
+func pdfcpuPageNumber(name string) (int, error) {
+	base := strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))
+	idx := strings.LastIndex(base, "_")
+	if idx < 0 || idx == len(base)-1 {
+		return 0, fmt.Errorf("render_pages: split output %q has no page suffix", name)
+	}
+	page, err := strconv.Atoi(base[idx+1:])
+	if err != nil || page < 1 {
+		return 0, fmt.Errorf("render_pages: split output %q has invalid page suffix", name)
+	}
+	return page, nil
 }
