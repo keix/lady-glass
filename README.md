@@ -19,15 +19,15 @@ flowchart TB
 
     subgraph SFN["Step Functions"]
         direction TB
-        StartExec --> RenderPages
-        RenderPages --> SubmitPages
+        StartExec --> SubmitPages
         SubmitPages --> WaitLoop[Wait]
         WaitLoop --> CheckPages
         CheckPages --> Choice{job status?}
         Choice -- pending --> WaitLoop
         Choice -- failed --> MarkFailed[MarkJobFailed]
         Choice -- succeeded --> Merge
-        Merge --> MarkSucceeded[MarkJobSucceeded]
+        MarkFailed --> Done([End])
+        Merge --> Done
     end
 
     subgraph CHAIN["SQS + Lambda"]
