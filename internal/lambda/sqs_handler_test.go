@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 
-	"github.com/keix/lady-glass/internal/stage/ai/lineocr"
+	"github.com/keix/lady-glass/internal/stage/mockstep"
 	"github.com/keix/lady-glass/internal/executor"
 	"github.com/keix/lady-glass/internal/lambda"
 	"github.com/keix/lady-glass/internal/object"
@@ -39,7 +39,7 @@ func TestSQSHandler_DecodesAndDispatches(t *testing.T) {
 	calls := 0
 	q := queue.NewMemoryQueue()
 	ex := &executor.Executor{
-		Step:      &lineocr.Mock{Objects: object.NewFileStore(t.TempDir()), Calls: &calls},
+		Step:      &mockstep.Step{Objects: object.NewFileStore(t.TempDir()), Calls: &calls},
 		NextStage: &pipeline.StageSpec{Name: "gemini", Version: "v1", QueueName: "gemini"},
 		Store:     store.NewMemoryStore(),
 		Queue:     q,
@@ -62,7 +62,7 @@ func TestSQSHandler_DecodesAndDispatches(t *testing.T) {
 func TestSQSHandler_ExecutorErrorReturnsError(t *testing.T) {
 	calls := 0
 	ex := &executor.Executor{
-		Step:      &lineocr.Mock{Objects: object.NewFileStore(t.TempDir()), Calls: &calls},
+		Step:      &mockstep.Step{Objects: object.NewFileStore(t.TempDir()), Calls: &calls},
 		NextStage: &pipeline.StageSpec{Name: "gemini", Version: "v1", QueueName: "gemini"},
 		Store:     store.NewMemoryStore(),
 		Queue:     &queue.Failing{Err: errors.New("simulated send failure")},
@@ -82,7 +82,7 @@ func TestSQSHandler_ExecutorErrorReturnsError(t *testing.T) {
 func TestSQSHandler_DecodeFailureReturnsError(t *testing.T) {
 	calls := 0
 	ex := &executor.Executor{
-		Step:  &lineocr.Mock{Objects: object.NewFileStore(t.TempDir()), Calls: &calls},
+		Step:  &mockstep.Step{Objects: object.NewFileStore(t.TempDir()), Calls: &calls},
 		Store: store.NewMemoryStore(),
 		Queue: queue.NewMemoryQueue(),
 	}

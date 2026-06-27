@@ -77,7 +77,7 @@ func TestDynamoStore_GetStage_ReturnsNilWhenAbsent(t *testing.T) {
 	fake := newFakeDynamoClient()
 	st := store.NewDynamoStore(fake, "lady-glass")
 
-	rec, err := st.GetStage(context.Background(), "missing-job", 1, "line_ocr", "v1")
+	rec, err := st.GetStage(context.Background(), "missing-job", 1, "mock", "v1")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -94,9 +94,9 @@ func TestDynamoStore_MarkAndGet_RoundTripsSucceeded(t *testing.T) {
 	out := pipeline.StepOutput{
 		JobID:     "job_x",
 		Page:      17,
-		Stage:     "line_ocr",
+		Stage:     "mock",
 		Version:   "v1",
-		ResultURI: "s3://bkt/jobs/job_x/pages/000017/line_ocr/v1/result.json",
+		ResultURI: "s3://bkt/jobs/job_x/pages/000017/mock/v1/result.json",
 	}
 	if err := st.MarkSucceeded(ctx, out, "gemini"); err != nil {
 		t.Fatalf("mark succeeded: %v", err)
@@ -105,11 +105,11 @@ func TestDynamoStore_MarkAndGet_RoundTripsSucceeded(t *testing.T) {
 	if pk := aws.ToString(fake.lastPut.TableName); pk != "lady-glass" {
 		t.Fatalf("table = %q", pk)
 	}
-	if got := fake.lastPut.Item["sk"].(*types.AttributeValueMemberS).Value; got != "PAGE#000017#STAGE#line_ocr#v1" {
+	if got := fake.lastPut.Item["sk"].(*types.AttributeValueMemberS).Value; got != "PAGE#000017#STAGE#mock#v1" {
 		t.Fatalf("sk = %q", got)
 	}
 
-	rec, err := st.GetStage(ctx, "job_x", 17, "line_ocr", "v1")
+	rec, err := st.GetStage(ctx, "job_x", 17, "mock", "v1")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestDynamoStore_MarkAndGet_RoundTripsSucceeded(t *testing.T) {
 	if rec.NextStage != "gemini" {
 		t.Fatalf("next_stage = %q", rec.NextStage)
 	}
-	if rec.IdempotencyKey != "job_x:page:000017:line_ocr:v1" {
+	if rec.IdempotencyKey != "job_x:page:000017:mock:v1" {
 		t.Fatalf("idempotency_key = %q", rec.IdempotencyKey)
 	}
 }
@@ -137,7 +137,7 @@ func TestDynamoStore_MarkRunning_SetsRunningStatusAndInputURI(t *testing.T) {
 	in := pipeline.StepInput{
 		JobID:    "job_y",
 		Page:     1,
-		Stage:    "line_ocr",
+		Stage:    "mock",
 		Version:  "v1",
 		InputURI: "s3://bkt/jobs/job_y/pages/000001/input.png",
 	}
@@ -145,7 +145,7 @@ func TestDynamoStore_MarkRunning_SetsRunningStatusAndInputURI(t *testing.T) {
 		t.Fatalf("mark running: %v", err)
 	}
 
-	rec, err := st.GetStage(context.Background(), "job_y", 1, "line_ocr", "v1")
+	rec, err := st.GetStage(context.Background(), "job_y", 1, "mock", "v1")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestDynamoStore_ListStagesByJob_FiltersAndIgnoresUnrelatedStages(t *testing
 	st := store.NewDynamoStore(fake, "lady-glass")
 	ctx := context.Background()
 
-	// Seed: three gemini v1 pages, one line_ocr v1 page (must be filtered),
+	// Seed: three gemini v1 pages, one mock v1 page (must be filtered),
 	// one gemini v2 page (must be filtered).
 	for _, page := range []int{1, 2, 3} {
 		if err := st.MarkSucceeded(ctx, pipeline.StepOutput{
@@ -263,10 +263,10 @@ func TestDynamoStore_ListStagesByJob_FiltersAndIgnoresUnrelatedStages(t *testing
 		}
 	}
 	if err := st.MarkSucceeded(ctx, pipeline.StepOutput{
-		JobID: "job_y", Page: 1, Stage: "line_ocr", Version: "v1",
+		JobID: "job_y", Page: 1, Stage: "mock", Version: "v1",
 		ResultURI: "s3://bkt/r",
 	}, "gemini"); err != nil {
-		t.Fatalf("seed line_ocr: %v", err)
+		t.Fatalf("seed mock: %v", err)
 	}
 	if err := st.MarkSucceeded(ctx, pipeline.StepOutput{
 		JobID: "job_y", Page: 2, Stage: "gemini", Version: "v2",
@@ -466,7 +466,7 @@ func TestDynamoStore_PutError_IsWrapped(t *testing.T) {
 	fake.putErr = errors.New("simulated put failure")
 	st := store.NewDynamoStore(fake, "lady-glass")
 
-	err := st.MarkRunning(context.Background(), pipeline.StepInput{JobID: "j", Page: 1, Stage: "line_ocr", Version: "v1"})
+	err := st.MarkRunning(context.Background(), pipeline.StepInput{JobID: "j", Page: 1, Stage: "mock", Version: "v1"})
 	if err == nil {
 		t.Fatal("expected wrapped put error, got nil")
 	}
