@@ -1,7 +1,9 @@
 # Lady Glass
-Lady Glass is a cloud OCR pipeline written in Go.
+
+Lady Glass is a distributed document intelligence runtime for composing and executing versioned AI stage chains.
 
 ## Why Lady Glass
+
 I met a Hong Kong woman in Kuala Lumpur who wore distinctive glasses.
 
 After spending more than I should have, I later found myself reading PDFs, receipts, and card statements more carefully than usual.
@@ -11,6 +13,7 @@ At some point, I realized this was a job for AI, not for me.
 Lady Glass is a pair of glasses for documents — her name was Miu.
 
 ## Architecture
+
 Lady Glass uses Step Functions for document-level orchestration and SQS + Lambda for page-level AI execution. DynamoDB is the control plane. S3 is the data plane.
 
 ```mermaid
@@ -65,58 +68,24 @@ Step Functions owns the document workflow. SQS and Lambda own the per-page AI st
 | S3             | Page images, stage results, merged output — the data plane       |
 | API Gateway    | Job control: upload URLs, execution start, status, and results   |
 
+## Multi-Chain Stage Runtime
 
-### Document workflow and page stages
+A chain is a named processing plan composed of page-level stages. Each stage owns its own SQS queue, Lambda function, concurrency limit, and versioned idempotency key.
 
-Document-level operations such as render, submit, check, and merge are managed by Step Functions. Page-level stages such as AI extraction and normalization are executed by SQS and Lambda. DynamoDB records state and idempotency for both layers.
+Multiple chains can coexist in one deployment, such as `credit_card_statement_v1`, `receipt_v1`, and experimental chains.
 
-### Sources
-Lady Glass can import documents from multiple sources.
+Each job is bound to a versioned chain, so deployments do not affect in-flight jobs.
 
-Sources are treated as import stages. A source stage reads an external document and stores a fixed copy in the object store before the document enters the pipeline.
-
-Examples of sources:
+The shipped credit-card statement chain is:
 
 ```text
-local file
-S3
-Google Drive
-OneDrive
+gemini/v1                    → multimodal extraction
+normalize_card_statement/v1  → removes phantom schedule and zero-amount rows
 ```
 
-After import, the rest of the pipeline works with the stored artifact URI.
-
-### Current chain
-
-The shipped chain for credit-card statements is two stages:
-
-```text
-gemini/v1                   → multimodal extraction; emits PageExtractionResult
-normalize_card_statement/v1 → drops phantom schedule rows + zero-amount rows
-                              (see internal/stage/normalize/cardstatement)
-```
-
-### Chain registry
-A chain is a named processing plan. Multiple chains can coexist in the same Lady Glass deployment, such as `credit_card_statement_v1`, `receipt_v1`, or experimental chains.
-
-When a job is created, the selected `ChainSpec` is resolved and frozen onto the `JobRecord`, so the job keeps following the chain it was born with even if the default chain changes later.
-
-### Chain binding
-A job is bound to the chain it was created with. The resolved `ChainSpec` is frozen onto the `JobRecord` ([SPEC §S10](SPEC.md#s10-chain-binding)), so new deployments can add or promote chains without disturbing in-flight jobs.
-
-Old chain resources are kept for one retention window before removal — drain is the same 14-day window as everything else ([SPEC §S9](SPEC.md#s9-retention)).
-
-Adding a stage to the *same* chain (currency conversion, classification, summary in the credit-card-statement chain) still costs only one SQS queue, one Lambda, and one `addStage` call per [SPEC §S7](SPEC.md#s7-composition).
-
-### Why split this way
-* **AI providers have different bottlenecks.** Each stage owns its own queue, so each Lambda sets its own reserved concurrency — a low-throughput provider cannot starve a high-throughput one.
-* **Idempotency belongs at the stage level.** `job_id + page + stage + version` is the key. A redelivered SQS message, a Lambda retry, or a Step Functions re-execution all collapse to the same "succeeded → skip" path in DynamoDB.
-* **Step Functions does not chain AI steps.** Page-level retry and ack stay inside SQS so workflow state transitions don't multiply with page count, and so external API limits don't leak into the workflow.
-* **CheckPages is read-only.** It polls DynamoDB and either keeps waiting, merges, or fails the job. No work happens inside the workflow itself beyond orchestration.
+Adding a stage requires one SQS queue, one Lambda, and one `addStage` call ([SPEC §S7](SPEC.md#s7-composition)).
 
 ### Idempotency
-
-Lady Glass treats idempotency as part of the control plane.
 
 Each page-level stage is keyed by:
 
@@ -124,30 +93,16 @@ Each page-level stage is keyed by:
 job_id + page + stage + version
 ```
 
-Before a stage runs, DynamoDB is checked for the stage record. If the same stage has already succeeded, the external provider call is skipped and the stored artifact is reused.
+chain_id is unnecessary because each job is permanently bound to one chain; (stage, version) identifies the stage implementation.
 
-This makes SQS redelivery, Lambda retry, and workflow retry safe: retries collapse to the same succeeded stage record instead of re-billing the same AI operation.
-
-DynamoDB records are temporary execution state. Stage records, idempotency keys, and job events are written with TTL attributes; the retention window defines how long idempotency is guaranteed for completed jobs.
+A succeeded stage reuses its stored artifact. SQS redelivery, Lambda retry, and workflow re-execution therefore do not repeat the provider call.
 
 ### Retention
 
-Lady Glass is a workflow plane, not a system of record. DynamoDB rows and S3 artifacts expire after **14 days** ([SPEC §S9](SPEC.md#s9-retention)). The same window is used for stage idempotency, job state, artifacts, and chain-drain safety.
-
-### Execution modes
-
-Lady Glass supports two workflow modes selected per job at submission time.
-
-In **passthrough** mode, the source PDF is sent to the AI stage as a single document input. Cheapest path, ideal for short PDFs (≤ ~5 pages) and images.
-
-In **rendered** mode, a document-level RenderPages step splits the PDF into one-page PDFs first. SubmitPages then fans out one message per page to SQS, so the AI stage runs N times in parallel — true per-page parallelism, retry, and idempotency.
-
-```bash
-lady-glass submit ./statement.pdf                       # passthrough (default)
-lady-glass submit ./long_report.pdf --mode rendered     # per-page split
-```
+Lady Glass is a workflow plane, not a system of record. DynamoDB state and S3 artifacts expire after **14 days** ([SPEC §S9](SPEC.md#s9-retention)).
 
 ## AWS Deploy
+
 Lady Glass infrastructure is defined with AWS CDK.
 
 Before the first deploy, provision two SSM parameters:
@@ -180,21 +135,31 @@ GET  /jobs/{id}/result                  merged typed extraction (JSON)
 GET  /jobs/{id}/aggregate?<filter>=<v>  single-dimension rollup (merchant=, foreign_currency=, …)
 ```
 
-The `lady-glass` CLI wraps these endpoints — see Local Development below.
+The `lady-glass` CLI wraps these endpoints — see [CLI](#cli) below.
+
+## CLI
+
+The `lady-glass` CLI wraps the HTTP API and supports two execution modes.
+
+In **passthrough** mode, the source PDF is processed as a single document. This is the default and is suitable for images and short PDFs.
+
+In **rendered** mode, the PDF is split into pages and processed concurrently with per-page retry and idempotency.
+
+```bash
+lady-glass submit ./statement.pdf
+lady-glass submit ./long-report.pdf --mode rendered
+```
 
 ## Local Development
-Lady Glass can run locally without AWS.
 
-In local development, the same stage model is used with a file-based object store and an in-memory state store.
-
+Lady Glass runs locally with mock AI stages and writes artifacts to `out/`.
 
 ```bash
 nix develop
 go run ./cmd/lady-glass dev
 ```
 
-The local runner uses mock AI stages and writes artifacts to `out/`.
-
 ## License
+
 Lady Glass is licensed under the MIT License.  
 Copyright (c) 2026 Kei Sawamura a.k.a. Master *void  
