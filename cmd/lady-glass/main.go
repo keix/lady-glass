@@ -20,7 +20,7 @@ import (
 	"github.com/keix/lady-glass/internal/pipeline"
 	"github.com/keix/lady-glass/internal/queue"
 	"github.com/keix/lady-glass/internal/stage/ai/gemini"
-	"github.com/keix/lady-glass/internal/stage/ai/lineocr"
+	"github.com/keix/lady-glass/internal/stage/mockstep"
 	"github.com/keix/lady-glass/internal/store"
 )
 
@@ -74,14 +74,14 @@ func runDev(ctx context.Context) {
 	st := store.NewMemoryStore()
 	q := queue.NewMemoryQueue()
 
-	lineCalls := 0
+	mockCalls := 0
 	geminiCalls := 0
 
-	lineStep := &lineocr.Mock{Objects: objects, Calls: &lineCalls}
+	mockStage := &mockstep.Step{Objects: objects, Calls: &mockCalls}
 	geminiStep := &gemini.Mock{Objects: objects, Calls: &geminiCalls}
 
-	lineExecutor := &executor.Executor{
-		Step: lineStep,
+	mockExecutor := &executor.Executor{
+		Step: mockStage,
 		NextStage: &pipeline.StageSpec{
 			Name:      "gemini",
 			Version:   "v1",
@@ -99,7 +99,7 @@ func runDev(ctx context.Context) {
 		InputURI: "file://testdata/page-1.png",
 	}
 
-	if err := lineExecutor.Execute(ctx, input); err != nil {
+	if err := mockExecutor.Execute(ctx, input); err != nil {
 		log.Fatal(err)
 	}
 
@@ -113,8 +113,8 @@ func runDev(ctx context.Context) {
 	}
 
 	fmt.Println("Lady Glass dev chain completed")
-	fmt.Printf("line_ocr calls: %d\n", lineCalls)
-	fmt.Printf("gemini calls:   %d\n", geminiCalls)
+	fmt.Printf("mock calls:   %d\n", mockCalls)
+	fmt.Printf("gemini calls: %d\n", geminiCalls)
 	fmt.Println("output: ./out")
 }
 

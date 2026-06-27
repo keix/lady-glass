@@ -61,10 +61,10 @@ func TestMemoryStore_ListStagesByJob_FiltersAndSortsByPage(t *testing.T) {
 		}
 	}
 	if err := st.MarkSucceeded(ctx, pipeline.StepOutput{
-		JobID: "job_y", Page: 1, Stage: "line_ocr", Version: "v1",
+		JobID: "job_y", Page: 1, Stage: "mock", Version: "v1",
 		ResultURI: "file://r",
 	}, "gemini"); err != nil {
-		t.Fatalf("seed line_ocr: %v", err)
+		t.Fatalf("seed mock: %v", err)
 	}
 	if err := st.MarkSucceeded(ctx, pipeline.StepOutput{
 		JobID: "job_y", Page: 1, Stage: "gemini", Version: "v2",

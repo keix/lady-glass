@@ -19,9 +19,9 @@ func TestStageKey(t *testing.T) {
 			name:    "page > 0 produces a page-scoped key with 6-digit zero padding",
 			jobID:   "job_123",
 			page:    17,
-			stage:   "line_ocr",
+			stage:   "mock",
 			version: "v1",
-			want:    "job_123:page:000017:line_ocr:v1",
+			want:    "job_123:page:000017:mock:v1",
 		},
 		{
 			name:    "page == 0 collapses to a job-level key (e.g., merge)",

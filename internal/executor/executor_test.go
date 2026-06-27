@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/keix/lady-glass/internal/stage/ai/gemini"
-	"github.com/keix/lady-glass/internal/stage/ai/lineocr"
+	"github.com/keix/lady-glass/internal/stage/mockstep"
 	"github.com/keix/lady-glass/internal/executor"
 	"github.com/keix/lady-glass/internal/object"
 	"github.com/keix/lady-glass/internal/pipeline"
@@ -21,7 +21,7 @@ func TestExecutor_SucceededStageIsNotReRun(t *testing.T) {
 	q := queue.NewMemoryQueue()
 
 	calls := 0
-	step := &lineocr.Mock{Objects: objects, Calls: &calls}
+	step := &mockstep.Step{Objects: objects, Calls: &calls}
 
 	ex := &executor.Executor{
 		Step:      step,
@@ -40,7 +40,7 @@ func TestExecutor_SucceededStageIsNotReRun(t *testing.T) {
 	}
 
 	if calls != 1 {
-		t.Fatalf("LineOCR.Run was called %d times, want 1", calls)
+		t.Fatalf("Step.Run was called %d times, want 1", calls)
 	}
 	if got := len(q.Messages["gemini"]); got != 2 {
 		t.Fatalf("gemini queue size = %d, want 2 (re-enqueue on succeeded skip)", got)
@@ -53,7 +53,7 @@ func TestExecutor_EnqueueFailureRetriesWithoutReRunningStep(t *testing.T) {
 	st := store.NewMemoryStore()
 
 	calls := 0
-	step := &lineocr.Mock{Objects: objects, Calls: &calls}
+	step := &mockstep.Step{Objects: objects, Calls: &calls}
 	next := &pipeline.StageSpec{Name: "gemini", Version: "v1", QueueName: "gemini"}
 
 	failing := &queue.Failing{Err: errors.New("simulated send failure")}
@@ -65,7 +65,7 @@ func TestExecutor_EnqueueFailureRetriesWithoutReRunningStep(t *testing.T) {
 		t.Fatal("expected error from failing queue, got nil")
 	}
 	if calls != 1 {
-		t.Fatalf("LineOCR.Run was called %d times after first attempt, want 1", calls)
+		t.Fatalf("Step.Run was called %d times after first attempt, want 1", calls)
 	}
 
 	good := queue.NewMemoryQueue()
@@ -75,7 +75,7 @@ func TestExecutor_EnqueueFailureRetriesWithoutReRunningStep(t *testing.T) {
 		t.Fatalf("retry execute: %v", err)
 	}
 	if calls != 1 {
-		t.Fatalf("LineOCR.Run was called %d times after retry, want 1", calls)
+		t.Fatalf("Step.Run was called %d times after retry, want 1", calls)
 	}
 	if got := len(good.Messages["gemini"]); got != 1 {
 		t.Fatalf("gemini queue size after retry = %d, want 1", got)
@@ -89,7 +89,7 @@ func TestExecutor_NextStageMessageCarriesOriginalInputURI(t *testing.T) {
 	q := queue.NewMemoryQueue()
 
 	calls := 0
-	step := &lineocr.Mock{Objects: objects, Calls: &calls}
+	step := &mockstep.Step{Objects: objects, Calls: &calls}
 
 	ex := &executor.Executor{
 		Step:      step,
@@ -115,7 +115,7 @@ func TestExecutor_NextStageMessageCarriesOriginalInputURI(t *testing.T) {
 		t.Fatalf("next InputURI = %q, want %q", got, in.InputURI)
 	}
 	if msgs[0].PreviousURI == "" {
-		t.Fatal("next PreviousURI should be set to the line_ocr ResultURI")
+		t.Fatal("next PreviousURI should be set to the mock ResultURI")
 	}
 }
 
@@ -131,7 +131,7 @@ func TestExecutor_PrefersInboundChainOverEnvNextStage(t *testing.T) {
 	q := queue.NewMemoryQueue()
 
 	calls := 0
-	step := &lineocr.Mock{Objects: objects, Calls: &calls}
+	step := &mockstep.Step{Objects: objects, Calls: &calls}
 
 	ex := &executor.Executor{
 		Step: step,
@@ -147,7 +147,7 @@ func TestExecutor_PrefersInboundChainOverEnvNextStage(t *testing.T) {
 		Page:     1,
 		InputURI: "s3://bkt/in.png",
 		Chain: []pipeline.StageSpec{
-			{Name: "line_ocr", Version: "v1", QueueName: "line_ocr"},
+			{Name: "mock", Version: "v1", QueueName: "mock"},
 			{Name: "normalize_paypay_statement", Version: "v1", QueueName: "normalize_paypay_statement"},
 		},
 		ChainIdx: 0,
@@ -182,7 +182,7 @@ func TestExecutor_TerminalChainStageDoesNotEnqueue(t *testing.T) {
 	q := queue.NewMemoryQueue()
 
 	calls := 0
-	step := &lineocr.Mock{Objects: objects, Calls: &calls}
+	step := &mockstep.Step{Objects: objects, Calls: &calls}
 
 	ex := &executor.Executor{
 		Step:      step,
@@ -195,7 +195,7 @@ func TestExecutor_TerminalChainStageDoesNotEnqueue(t *testing.T) {
 		JobID: "j_terminal",
 		Page:  1,
 		Chain: []pipeline.StageSpec{
-			{Name: "line_ocr", Version: "v1", QueueName: "line_ocr"},
+			{Name: "mock", Version: "v1", QueueName: "mock"},
 		},
 		ChainIdx: 0, // single-stage chain, this is the terminal index
 	}
@@ -214,7 +214,7 @@ type flakyStep struct {
 	calls int
 }
 
-func (s *flakyStep) Name() string    { return "line_ocr" }
+func (s *flakyStep) Name() string    { return "mock" }
 func (s *flakyStep) Version() string { return "v1" }
 func (s *flakyStep) Run(_ context.Context, in pipeline.StepInput) (pipeline.StepOutput, error) {
 	s.calls++
@@ -252,7 +252,7 @@ func TestExecutor_FailedStageIsRerunOnNextDelivery(t *testing.T) {
 		t.Fatalf("step calls after 1st delivery = %d, want 1", step.calls)
 	}
 
-	rec, err := st.GetStage(ctx, "j_flaky", 1, "line_ocr", "v1")
+	rec, err := st.GetStage(ctx, "j_flaky", 1, "mock", "v1")
 	if err != nil {
 		t.Fatalf("get stage after 1st: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestExecutor_FailedStageIsRerunOnNextDelivery(t *testing.T) {
 		t.Fatalf("step calls after 2nd delivery = %d, want 2", step.calls)
 	}
 
-	rec, err = st.GetStage(ctx, "j_flaky", 1, "line_ocr", "v1")
+	rec, err = st.GetStage(ctx, "j_flaky", 1, "mock", "v1")
 	if err != nil {
 		t.Fatalf("get stage after 2nd: %v", err)
 	}

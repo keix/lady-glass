@@ -160,7 +160,7 @@ func TestStartJob_KicksSFnExecution(t *testing.T) {
 		InputURI: "s3://bkt/jobs/job_x/input.pdf",
 		ChainID:  "test-two-stage",
 		Chain: []pipeline.StageSpec{
-			{Name: "line_ocr", Version: "v2", QueueName: "line_ocr_q"},
+			{Name: "mock", Version: "v2", QueueName: "mock_q"},
 			{Name: "gemini", Version: "v1", QueueName: "gemini"},
 		},
 	}); err != nil {
@@ -189,8 +189,8 @@ func TestStartJob_KicksSFnExecution(t *testing.T) {
 		t.Fatalf("sfn input chain = %v, want 2-stage list", sfnInput["chain"])
 	}
 	firstStage := chainAny[0].(map[string]any)
-	if firstStage["queue_name"] != "line_ocr_q" {
-		t.Fatalf("sfn input chain[0].queue_name = %v, want line_ocr_q", firstStage["queue_name"])
+	if firstStage["queue_name"] != "mock_q" {
+		t.Fatalf("sfn input chain[0].queue_name = %v, want mock_q", firstStage["queue_name"])
 	}
 	if sfnInput["final_stage"] != "gemini" || sfnInput["final_version"] != "v1" {
 		t.Fatalf("sfn input final = %v / %v", sfnInput["final_stage"], sfnInput["final_version"])

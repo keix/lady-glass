@@ -130,10 +130,10 @@ func TestCheckPages_NoRecords_ReturnsPending(t *testing.T) {
 
 func TestCheckPages_DifferentStageDoesNotCount(t *testing.T) {
 	st := store.NewMemoryStore()
-	// One page succeeded under line_ocr v1 — should not count toward
+	// One page succeeded under mock v1 — should not count toward
 	// the final gemini v1 stage's progress.
 	if err := st.MarkSucceeded(context.Background(), pipeline.StepOutput{
-		JobID: "j", Page: 1, Stage: "line_ocr", Version: "v1",
+		JobID: "j", Page: 1, Stage: "mock", Version: "v1",
 		ResultURI: "file://r",
 	}, "gemini"); err != nil {
 		t.Fatalf("seed: %v", err)
