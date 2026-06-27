@@ -20,42 +20,53 @@ Lady Glass uses Step Functions for document-level orchestration and SQS + Lambda
 flowchart TB
     User([API / CLI]) --> StartExec[StartExecution]
 
-    subgraph SFN["Step Functions"]
+    subgraph LG["Lady Glass"]
         direction TB
-        StartExec --> SubmitPages
-        SubmitPages --> WaitLoop[Wait]
-        WaitLoop --> CheckPages
-        CheckPages --> Choice{job status?}
-        Choice -- pending --> WaitLoop
-        Choice -- failed --> MarkFailed[MarkJobFailed]
-        Choice -- succeeded --> Merge
-        MarkFailed --> Done([End])
-        Merge --> Done
+
+        subgraph SFN["Step Functions"]
+            direction TB
+            StartExec --> SubmitPages
+            SubmitPages --> WaitLoop[Wait]
+            WaitLoop --> CheckPages
+            CheckPages --> Choice{job status?}
+            Choice -- pending --> WaitLoop
+            Choice -- failed --> MarkFailed[MarkJobFailed]
+            Choice -- succeeded --> Merge
+            MarkFailed --> Notify[NotifyCompletion]
+            Merge --> Notify
+            Notify --> Done([End])
+        end
+
+        subgraph CHAIN["SQS + Lambda"]
+            direction LR
+            Q1[(stage-1-queue)] --> L1[stage-1 Lambda]
+            L1 -- enqueue next stage --> Q2[(stage-2-queue)]
+            Q2 --> L2[stage-2 Lambda]
+        end
+
+        subgraph DATA["Data plane"]
+            direction LR
+            S3[(S3 — images, stage results, merged output)]
+            DDB[(DynamoDB — stage state, idempotency, events)]
+        end
     end
 
-    subgraph CHAIN["SQS + Lambda"]
-        direction LR
-        Q1[(stage-1-queue)] --> L1[stage-1 Lambda]
-        L1 -- enqueue next stage --> Q2[(stage-2-queue)]
-        Q2 --> L2[stage-2 Lambda]
-    end
-
-    subgraph DATA["Data plane"]
-        direction LR
-        S3[(S3 — images, stage results, merged output)]
-        DDB[(DynamoDB — stage state, idempotency, events)]
-    end
+    Subscriber([External subscriber default: NoOp])
 
     SubmitPages -. one message per page .-> Q1
     CheckPages -. read status .-> DDB
     Merge -. read stage state .-> DDB
     Merge -. read result objects .-> S3
     Merge -. write merged result .-> S3
+    Notify -. read terminal state .-> DDB
+    Notify -. post-commit notify .-> Subscriber
 
     L1 --- S3
     L1 --- DDB
     L2 --- S3
     L2 --- DDB
+
+    Done ~~~ Subscriber
 ```
 
 Step Functions owns the document workflow. SQS and Lambda own the per-page AI stage chain. They meet at DynamoDB, the control plane, and S3, the data plane.
@@ -93,13 +104,19 @@ Each page-level stage is keyed by:
 job_id + page + stage + version
 ```
 
-chain_id is unnecessary because each job is permanently bound to one chain; (stage, version) identifies the stage implementation.
+`chain_id` is unnecessary because each job is permanently bound to one chain; `(stage, version)` identifies the stage implementation.
 
 A succeeded stage reuses its stored artifact. SQS redelivery, Lambda retry, and workflow re-execution therefore do not repeat the provider call.
 
 ### Retention
 
 Lady Glass is a workflow plane, not a system of record. DynamoDB state and S3 artifacts expire after **14 days** ([SPEC §S9](SPEC.md#s9-retention)).
+
+### Post-Commit Notification
+
+After Merge or MarkJobFailed commits a job's terminal state, a single `NotifyCompletion` step reads the JobRecord and dispatches to the matching Notifier implementation ([SPEC §S11](SPEC.md#s11-post-commit-observers)).
+
+Notifier failures do not roll back the JobRecord; retries are independent of the commit. The default Notifier is silent — replace it when an external subscriber (webhook, Slack, EventBridge) lands.
 
 ## AWS Deploy
 

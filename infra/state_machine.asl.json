@@ -89,7 +89,8 @@
         "final_stage.$": "$.final_stage",
         "final_version.$": "$.final_version"
       },
-      "End": true
+      "ResultPath": "$.merge_result",
+      "Next": "NotifyCompletion"
     },
     "MarkJobFailed": {
       "Type": "Task",
@@ -98,6 +99,34 @@
         "job_id.$": "$.job_id",
         "error": "one or more page stages reported status=failed"
       },
+      "ResultPath": "$.mark_failed_result",
+      "Next": "NotifyCompletion"
+    },
+    "NotifyCompletion": {
+      "Type": "Task",
+      "Resource": "${NotifyCompletionLambdaArn}",
+      "Parameters": {
+        "job_id.$": "$.job_id"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.notify_error",
+          "Next": "Done"
+        }
+      ],
+      "Next": "Done"
+    },
+    "Done": {
+      "Type": "Pass",
       "End": true
     }
   }

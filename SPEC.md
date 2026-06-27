@@ -221,6 +221,59 @@ POST /jobs so a single deployment can host multiple chains
 concurrently. The persistence contract above already supports
 this — only the API surface needs to opt in.
 
+## S11. Post-commit observers
+
+A post-commit observer is a workflow step that runs after the
+job's terminal state has been committed by Merge (succeeded) or
+MarkJobFailed (failed). Its sole purpose is to inform the outside
+world that the job has reached its terminal state. It is not part
+of the transition; it observes a fact that is already true.
+
+A conforming implementation MUST:
+
+- run the observer AFTER the terminal-state commit, never before
+  or concurrently with it;
+- guarantee that the observer's failure does not roll back the
+  JobRecord's succeeded / failed status, the ResultURI, or any
+  other persisted field;
+- retry the observer independently of the terminal-state commit
+  — the orchestrator's retry on a notify failure MUST NOT
+  re-invoke Merge or MarkJobFailed;
+- delegate idempotency to the observer implementation: a
+  re-delivery of the same observer call for the same job_id
+  MUST be handled by the implementation (typically using
+  job_id as a deduplication key).
+
+Observers are not stages: they do not appear in the ChainSpec,
+do not write per-page StageRecords, and do not participate in
+§S5 skip semantics.
+
+The contract has two endpoints — one per terminal state:
+
+- `NotifySucceeded(JobSucceeded)` fires after Merge.
+- `NotifyFailed(JobFailed)`       fires after MarkJobFailed.
+
+Both endpoints MUST be present on every conforming Notifier.
+The failure endpoint is structural rather than symmetric: an
+external system that treats the succeeded notification as a
+proxy for "no longer processing" would otherwise leave failed
+jobs stuck in its own "processing" state indefinitely. Providing
+both endpoints closes the terminal-state boundary completely.
+
+The default Notifier MAY be a silent implementation that returns
+nil on both endpoints; deployments without an external subscriber
+need no further wiring and incur no extra cost at the boundary.
+
+*Implementation note (informative)*: because both terminal states
+are already persisted on the JobRecord at the time the observer
+runs, a single workflow Lambda that reads the JobRecord and
+dispatches to the matching Notifier endpoint by `Status` is the
+natural realization. The orchestrator routes both Merge and
+MarkJobFailed to the same observer state; the dispatch is in
+code, not in the ASL. A Catch handler that swallows retry
+exhaustion ends the execution without affecting the JobRecord,
+preserving the "observer failure MUST NOT roll back" invariant.
+
 ---
 
 ## Conformance map (informative)
@@ -241,6 +294,7 @@ normative.
 | S8     | `infra/cdk/stack.go` (one queue + one Lambda per stage), `internal/workflow/{check_pages,merge}.go` |
 | S9     | `internal/store/dynamodb.go` (`RetentionDays`, `expires_at` attribute, read-time filter), `infra/cdk/stack.go` (`TimeToLiveAttribute` + bucket `LifecycleRules`) |
 | S10    | `internal/chain/` (Registry + Resolve), `internal/store/store.go` (`JobRecord.ChainID`, `JobRecord.Chain`), `internal/api/handler.go` (createJob freeze, startJob/status projection) |
+| S11    | `internal/notify/` (`Notifier`, `NoOp`), `internal/workflow/notify_completion.go` (dispatch by JobRecord.Status), `infra/state_machine.asl.json` (Merge & MarkJobFailed → NotifyCompletion → Done, with Retry + Catch) |
 
 ---
 
