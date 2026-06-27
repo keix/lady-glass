@@ -67,6 +67,11 @@ flowchart TB
     L2 --- DDB
 
     Done ~~~ Subscriber
+
+    style LG fill:none,stroke:#888,stroke-width:1.5px
+    style SFN fill:none
+    style CHAIN fill:none
+    style DATA fill:none
 ```
 
 Step Functions owns the document workflow. SQS and Lambda own the per-page AI stage chain. They meet at DynamoDB, the control plane, and S3, the data plane.
