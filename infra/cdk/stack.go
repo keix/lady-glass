@@ -300,6 +300,17 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	})
 	bucket.GrantReadWrite(renderPages, nil)
 
+	// SPEC §S11: the post-commit observer. Runs after both Merge
+	// (succeeded) and MarkJobFailed (failed); reads JobRecord to
+	// dispatch by Status. Has no write grant — observers MUST NOT
+	// mutate the JobRecord — and ships with notify.NoOp as the
+	// default sink until an external subscriber lands.
+	notifyCompletion := makeLambda("NotifyCompletionLambda", "notify-completion-lambda", &map[string]*string{
+		"LADY_GLASS_TABLE":          table.TableName(),
+		"LADY_GLASS_RETENTION_DAYS": retentionDays,
+	})
+	table.GrantReadData(notifyCompletion)
+
 	// --- Step Functions state machine ------------------------------------
 
 	// The ASL ships in the repo at ../state_machine.asl.json. Loading it
@@ -313,11 +324,12 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 			nil,
 		),
 		DefinitionSubstitutions: &map[string]*string{
-			"SubmitPagesLambdaArn":   submitPages.FunctionArn(),
-			"CheckPagesLambdaArn":    checkPages.FunctionArn(),
-			"MergeLambdaArn":         merge.FunctionArn(),
-			"MarkJobFailedLambdaArn": markFailed.FunctionArn(),
-			"RenderPagesLambdaArn":   renderPages.FunctionArn(),
+			"SubmitPagesLambdaArn":       submitPages.FunctionArn(),
+			"CheckPagesLambdaArn":        checkPages.FunctionArn(),
+			"MergeLambdaArn":             merge.FunctionArn(),
+			"MarkJobFailedLambdaArn":     markFailed.FunctionArn(),
+			"RenderPagesLambdaArn":       renderPages.FunctionArn(),
+			"NotifyCompletionLambdaArn":  notifyCompletion.FunctionArn(),
 		},
 	})
 
@@ -329,6 +341,7 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	merge.GrantInvoke(stateMachine)
 	markFailed.GrantInvoke(stateMachine)
 	renderPages.GrantInvoke(stateMachine)
+	notifyCompletion.GrantInvoke(stateMachine)
 
 	// --- API Lambda + HTTP API -------------------------------------------
 

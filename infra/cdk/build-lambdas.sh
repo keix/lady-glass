@@ -20,6 +20,7 @@ LAMBDAS=(
     check-pages-lambda
     merge-lambda
     mark-job-failed-lambda
+    notify-completion-lambda
     api-lambda
     render-pages-lambda
 )

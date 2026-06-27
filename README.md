@@ -101,6 +101,10 @@ A succeeded stage reuses its stored artifact. SQS redelivery, Lambda retry, and 
 
 Lady Glass is a workflow plane, not a system of record. DynamoDB state and S3 artifacts expire after **14 days** ([SPEC §S9](SPEC.md#s9-retention)).
 
+### Post-commit notify
+
+After Merge or MarkJobFailed commits a job's terminal state, a single `NotifyCompletion` step reads the JobRecord and dispatches to the matching Notifier endpoint ([SPEC §S11](SPEC.md#s11-post-commit-observers)). Notifier failures do not roll back the JobRecord; retries are independent of the commit. The default Notifier is silent — replace it when an external subscriber (webhook, Slack, EventBridge) lands.
+
 ## AWS Deploy
 
 Lady Glass infrastructure is defined with AWS CDK.
