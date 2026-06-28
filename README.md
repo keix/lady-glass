@@ -1,6 +1,6 @@
 # Lady Glass
 
-Lady Glass is a distributed document intelligence runtime for composing and executing versioned AI stage chains.
+Lady Glass is a distributed document intelligence runtime for composing and executing versioned AI stage chains. AI reads. Lady Glass orchestrates.
 
 ## Why Lady Glass
 
