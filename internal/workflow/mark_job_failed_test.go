@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/keix/lady-glass/internal/pipeline"
 	"github.com/keix/lady-glass/internal/store"
 	"github.com/keix/lady-glass/internal/workflow"
 )
@@ -18,6 +19,10 @@ func TestMarkJobFailed_FlipsStatusAndPreservesContext(t *testing.T) {
 		InputURI:  "s3://bkt/jobs/j_fail/input.pdf",
 		PageCount: 3,
 		Mode:      "rendered",
+		ChainID:   "test-chain",
+		Chain: []pipeline.StageSpec{
+			{Name: "gemini", Version: "v1", QueueName: "gemini-q"},
+		},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -51,6 +56,9 @@ func TestMarkJobFailed_FlipsStatusAndPreservesContext(t *testing.T) {
 	}
 	if rec.Mode != "rendered" {
 		t.Fatalf("Mode lost: %q", rec.Mode)
+	}
+	if rec.ChainID != "test-chain" || len(rec.Chain) != 1 || rec.Chain[0].Name != "gemini" {
+		t.Fatalf("Chain binding lost: id=%q chain=%+v", rec.ChainID, rec.Chain)
 	}
 }
 

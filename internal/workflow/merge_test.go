@@ -49,6 +49,10 @@ func TestMerge_WritesMergedDocumentAndUpdatesJob(t *testing.T) {
 		InputURI:  "s3://bkt/jobs/j_merge/input.pdf",
 		PageCount: 3,
 		Mode:      "rendered",
+		ChainID:   "test-chain",
+		Chain: []pipeline.StageSpec{
+			{Name: "gemini", Version: "v1", QueueName: "gemini-q"},
+		},
 	}); err != nil {
 		t.Fatalf("seed job: %v", err)
 	}
@@ -115,6 +119,9 @@ func TestMerge_WritesMergedDocumentAndUpdatesJob(t *testing.T) {
 	}
 	if rec.Mode != "rendered" {
 		t.Fatalf("Mode was lost from JobRecord: %q", rec.Mode)
+	}
+	if rec.ChainID != "test-chain" || len(rec.Chain) != 1 || rec.Chain[0].Name != "gemini" {
+		t.Fatalf("Chain binding was lost from JobRecord: id=%q chain=%+v", rec.ChainID, rec.Chain)
 	}
 }
 
