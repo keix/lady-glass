@@ -288,7 +288,7 @@ func runSubmit(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("submit", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON output")
 	mode := fs.String("mode", "", `workflow mode: "passthrough" (default) or "rendered"`)
-	_ = fs.Parse(args)
+	_ = parseInterspersed(fs, args)
 	if fs.NArg() < 1 {
 		log.Fatal("usage: lady-glass submit <file> [--mode passthrough|rendered] [--json]")
 	}
@@ -339,7 +339,7 @@ func runSubmit(ctx context.Context, args []string) {
 func runStatus(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON output")
-	_ = fs.Parse(args)
+	_ = parseInterspersed(fs, args)
 	if fs.NArg() < 1 {
 		log.Fatal("usage: lady-glass status <job_id> [--json]")
 	}
@@ -379,7 +379,7 @@ func runStatus(ctx context.Context, args []string) {
 // runResult fetches the typed merged result and pretty-prints it.
 func runResult(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("result", flag.ExitOnError)
-	_ = fs.Parse(args)
+	_ = parseInterspersed(fs, args)
 	if fs.NArg() < 1 {
 		log.Fatal("usage: lady-glass result <job_id>")
 	}
@@ -403,7 +403,7 @@ func runAggregate(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("aggregate", flag.ExitOnError)
 	filter := fs.String("filter", "", "single filter as key=value (e.g. merchant=ファミマ, foreign_currency=MYR)")
 	jsonOut := fs.Bool("json", false, "emit JSON output")
-	_ = fs.Parse(args)
+	_ = parseInterspersed(fs, args)
 	if fs.NArg() < 1 || *filter == "" {
 		log.Fatal("usage: lady-glass aggregate <job_id> --filter key=value [--json]")
 	}
@@ -455,5 +455,65 @@ func printJSON(v any) {
 		log.Fatalf("encode: %v", err)
 	}
 	fmt.Print(buf.String())
+}
+
+// parseInterspersed wraps fs.Parse so flags and positionals can be
+// mixed in any order. Stdlib's flag stops parsing at the first
+// non-flag token, which trips users running e.g.
+// `lady-glass submit ./file.pdf --mode rendered` (the --mode is
+// silently dropped). This shim reorders args so every flag (and its
+// value, if any) lands before any positional before calling fs.Parse.
+//
+// Conventions honoured:
+//   - "--" terminates flag parsing; everything after is positional.
+//   - "-" alone is positional (the stdin convention).
+//   - "--key=value" is a single token.
+//   - Bool flags (those implementing IsBoolFlag() bool returning true)
+//     do not consume the next token.
+//
+// flag.FlagSet does not expose registered flags by lookup-by-prefix,
+// so we use VisitAll to build a small (name → isBool) table once
+// per parse call. Negligible cost.
+func parseInterspersed(fs *flag.FlagSet, args []string) error {
+	type boolFlag interface{ IsBoolFlag() bool }
+	isBool := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		if bf, ok := f.Value.(boolFlag); ok && bf.IsBoolFlag() {
+			isBool[f.Name] = true
+		}
+	})
+
+	var flags, positionals []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			positionals = append(positionals, args[i+1:]...)
+			i = len(args)
+		case a == "-" || !strings.HasPrefix(a, "-"):
+			positionals = append(positionals, a)
+		default:
+			name := strings.TrimLeft(a, "-")
+			if eq := strings.Index(name, "="); eq >= 0 {
+				flags = append(flags, a)
+				continue
+			}
+			flags = append(flags, a)
+			if !isBool[name] && i+1 < len(args) {
+				flags = append(flags, args[i+1])
+				i++
+			}
+		}
+	}
+
+	// Always insert "--" so fs.Parse never mistakes a leading "-" on
+	// a positional (e.g. a job_id that begins with "-" — unusual but
+	// legal) for a flag, and so a literal "--" arg from the user
+	// continues to mean "everything after is positional."
+	reordered := make([]string, 0, len(flags)+1+len(positionals))
+	reordered = append(reordered, flags...)
+	reordered = append(reordered, "--")
+	reordered = append(reordered, positionals...)
+	return fs.Parse(reordered)
 }
 
