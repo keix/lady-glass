@@ -44,7 +44,7 @@ flowchart TB
             Q2 --> L2[stage-2 Lambda]
         end
 
-        subgraph DATA["Data plane"]
+        subgraph PERSIST["Persistence"]
             direction LR
             S3[(S3 — images, stage results, merged output)]
             DDB[(DynamoDB — stage state, idempotency, events)]
@@ -71,7 +71,7 @@ flowchart TB
     style LG fill:none,stroke:#888,stroke-width:1.5px
     style SFN fill:none
     style CHAIN fill:none
-    style DATA fill:none
+    style PERSIST fill:none
 ```
 
 Step Functions owns the document workflow. SQS and Lambda own the per-page AI stage chain. They meet at DynamoDB, the control plane, and S3, the data plane.
