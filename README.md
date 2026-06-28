@@ -4,7 +4,7 @@ Lady Glass is a distributed document intelligence runtime for composing and exec
 
 ## Why Lady Glass
 
-I met a Hong Kong woman in Kuala Lumpur who wore distinctive glasses.
+In Kuala Lumpur, I met a Hong Kong woman who wore distinctive glasses.
 
 After spending more than I should have, I later found myself reading PDFs, receipts, and card statements more carefully than usual.
 
@@ -180,6 +180,10 @@ Lady Glass runs locally with mock AI stages and writes artifacts to `out/`.
 nix develop
 go run ./cmd/lady-glass dev
 ```
+
+## Acknowledgments
+
+Lady Glass was inspired by the beautiful lady who became its architecture.
 
 ## License
 
