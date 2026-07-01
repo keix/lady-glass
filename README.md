@@ -17,11 +17,11 @@ Lady Glass is a pair of glasses for documents — her name was Miu.
 Lady Glass uses Step Functions for document-level orchestration and SQS + Lambda for page-level AI execution. DynamoDB is the control plane. S3 is the data plane.
 
 ```mermaid
-flowchart LR
+flowchart TB
     User([API / CLI]) --> StartExec[StartExecution]
 
     subgraph LG["Lady Glass"]
-        direction LR
+        direction TB
 
         subgraph SFN["Step Functions"]
             direction TB
@@ -30,19 +30,17 @@ flowchart LR
             WaitLoop --> CheckPages
             CheckPages --> Choice{job status?}
             Choice -- pending --> WaitLoop
-            Choice --> MarkFailed[MarkJobFailed]
+            Choice -- failed --> MarkFailed[MarkJobFailed]
             Choice -- succeeded --> Merge
             MarkFailed --> Notify[NotifyCompletion]
-            Merge --> Archive[ArchiveResult]
-            Archive --> Index[IndexKowloon]
-            Index --> Notify[NotifyCompletion]
+            Merge --> Notify
             Notify --> Done([End])
         end
 
         subgraph CHAIN["SQS + Lambda"]
             direction LR
             Q1[(stage-1-queue)] --> L1[stage-1 Lambda]
-            L1 -- enqueue --> Q2[(stage-2-queue)]
+            L1 -- enqueue next stage --> Q2[(stage-2-queue)]
             Q2 --> L2[stage-2 Lambda]
         end
 
@@ -55,12 +53,13 @@ flowchart LR
 
     Subscriber([External subscriber default: NoOp])
 
-    SubmitPages -.-> Q1
-    CheckPages -.-> DDB
-    Merge -.-> DDB
-    Merge -.-> S3
-    Notify -.-> DDB
-    Notify -.-> Subscriber
+    SubmitPages -. one message per page .-> Q1
+    CheckPages -. read status .-> DDB
+    Merge -. read stage state .-> DDB
+    Merge -. read result objects .-> S3
+    Merge -. write merged result .-> S3
+    Notify -. read terminal state .-> DDB
+    Notify -. post-commit notify .-> Subscriber
 
     L1 --- S3
     L1 --- DDB
