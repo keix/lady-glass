@@ -20,58 +20,42 @@ Lady Glass uses Step Functions for document-level orchestration and SQS + Lambda
 flowchart TB
     User([API / CLI]) --> StartExec[StartExecution]
 
-    subgraph LG["Lady Glass"]
+    subgraph SFN["Step Functions"]
         direction TB
-
-        subgraph SFN["Step Functions"]
-            direction TB
-            StartExec --> SubmitPages
-            SubmitPages --> WaitLoop[Wait]
-            WaitLoop --> CheckPages
-            CheckPages --> Choice{job status?}
-            Choice -- pending --> WaitLoop
-            Choice -- failed --> MarkFailed[MarkJobFailed]
-            Choice -- succeeded --> Merge
-            MarkFailed --> Notify[NotifyCompletion]
-            Merge --> Notify
-            Notify --> Done([End])
-        end
-
-        subgraph CHAIN["SQS + Lambda"]
-            direction LR
-            Q1[(stage-1-queue)] --> L1[stage-1 Lambda]
-            L1 -- enqueue next stage --> Q2[(stage-2-queue)]
-            Q2 --> L2[stage-2 Lambda]
-        end
-
-        subgraph DATA["Data plane"]
-            direction LR
-            S3[(S3 — images, stage results, merged output)]
-            DDB[(DynamoDB — stage state, idempotency, events)]
-        end
+        StartExec --> SubmitPages
+        SubmitPages --> WaitLoop[Wait]
+        WaitLoop --> CheckPages
+        CheckPages --> Choice{job status?}
+        Choice -- pending --> WaitLoop
+        Choice -- failed --> MarkFailed[MarkJobFailed]
+        Choice -- succeeded --> Merge
+        MarkFailed --> Done([End])
+        Merge --> Done
     end
 
-    Subscriber([External subscriber default: NoOp])
+    subgraph CHAIN["SQS + Lambda"]
+        direction LR
+        Q1[(stage-1-queue)] --> L1[stage-1 Lambda]
+        L1 -- enqueue next stage --> Q2[(stage-2-queue)]
+        Q2 --> L2[stage-2 Lambda]
+    end
+
+    subgraph DATA["Data plane"]
+        direction LR
+        S3[(S3 — images, stage results, merged output)]
+        DDB[(DynamoDB — stage state, idempotency, events)]
+    end
 
     SubmitPages -. one message per page .-> Q1
     CheckPages -. read status .-> DDB
     Merge -. read stage state .-> DDB
     Merge -. read result objects .-> S3
     Merge -. write merged result .-> S3
-    Notify -. read terminal state .-> DDB
-    Notify -. post-commit notify .-> Subscriber
 
     L1 --- S3
     L1 --- DDB
     L2 --- S3
     L2 --- DDB
-
-    Done ~~~ Subscriber
-
-    style LG fill:none,stroke:#888,stroke-width:1.5px
-    style SFN fill:none
-    style CHAIN fill:none
-    style DATA fill:none
 ```
 
 Step Functions owns the document workflow. SQS and Lambda own the per-page AI stage chain. They meet at DynamoDB, the control plane, and S3, the data plane.
