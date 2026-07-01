@@ -30,12 +30,12 @@ flowchart TB
             WaitLoop --> CheckPages
             CheckPages --> Choice{job status?}
             Choice -- pending --> WaitLoop
-            Choice -- failed --> MarkFailed[MarkJobFailed]
             Choice -- succeeded --> Merge
-            MarkFailed --> Notify[NotifyCompletion]
             Merge --> Archive[ArchiveResult]
             Archive --> Index[IndexKowloon]
             Index --> Notify[NotifyCompletion]
+            Choice -- failed --> MarkFailed[MarkJobFailed]
+            MarkFailed --> Notify
             Notify --> Done([End])
         end
 
