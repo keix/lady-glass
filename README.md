@@ -55,13 +55,12 @@ flowchart TB
 
     Subscriber([External subscriber default: NoOp])
 
-    SubmitPages -. one message per page .-> Q1
-    CheckPages -. read status .-> DDB
-    Merge -. read stage state .-> DDB
-    Merge -. read result objects .-> S3
-    Merge -. write merged result .-> S3
-    Notify -. read terminal state .-> DDB
-    Notify -. post-commit notify .-> Subscriber
+    SubmitPages -.-> Q1
+    CheckPages -.-> DDB
+    Merge -.-> DDB
+    Merge -.-> S3
+    Notify -.-> DDB
+    Notify -.-> Subscriber
 
     L1 --- S3
     L1 --- DDB
