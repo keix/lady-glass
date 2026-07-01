@@ -17,63 +17,38 @@ Lady Glass is a pair of glasses for documents — her name was Miu.
 Lady Glass uses Step Functions for document-level orchestration and SQS + Lambda for page-level AI execution. DynamoDB is the control plane. S3 is the data plane.
 
 ```mermaid
-flowchart TB
-    User([API / CLI]) --> StartExec[StartExecution]
+flowchart LR
+    Start[StartExecution]
+    Start --> SubmitPages
+    SubmitPages --> Wait
+    Wait --> CheckPages
+    CheckPages --> Choice{job status?}
+    Choice -- pending --> Wait
+    Choice -- failed --> MarkFailed[MarkJobFailed]
+    Choice -- succeeded --> Merge
+    MarkFailed --> Notify[NotifyCompletion]
+    Merge --> Archive[ArchiveResult]
+    Archive --> Index[IndexKowloon]
+    Index --> Notify
 
-    subgraph LG["Lady Glass"]
-        direction TB
+    SubmitPages --> Q1[(stage-1-queue)]
+    Q1 --> L1[stage-1 Lambda]
+    L1 -- enqueue --> Q2[(stage-2-queue)]
+    Q2 --> L2[stage-2 Lambda]
+    L2 -- enqueue --> Q3[(stage-3-queue)]
+    Q3 --> L3[stage-3 Lambda]
 
-        subgraph SFN["Step Functions"]
-            direction TB
-            StartExec --> SubmitPages
-            SubmitPages --> WaitLoop[Wait]
-            WaitLoop --> CheckPages
-            CheckPages --> Choice{job status?}
-            Choice -- pending --> WaitLoop
-            Choice -- failed --> MarkFailed[MarkJobFailed]
-            Choice -- succeeded --> Merge
-            MarkFailed --> Notify[NotifyCompletion]
-            Merge --> Archive[ArchiveResult]
-            Archive --> Index[IndexKowloon]
-            Index --> Notify[NotifyCompletion]
-            Notify --> Done([End])
-        end
+    L1 -.-> S3[(S3)]
+    L1 -.-> DDB[(DynamoDB)]
+    L2 -.-> S3[(S3 storage)]
+    L2 -.-> DDB
+    L3 -.-> S3
+    L3 -.-> DDB
 
-        subgraph CHAIN["SQS + Lambda"]
-            direction LR
-            Q1[(stage-1-queue)] --> L1[stage-1 Lambda]
-            L1 -- enqueue next stage --> Q2[(stage-2-queue)]
-            Q2 --> L2[stage-2 Lambda]
-        end
-
-        subgraph PERSIST["Persistence"]
-            direction LR
-            S3[(S3 — images, stage results, merged output)]
-            DDB[(DynamoDB — stage state, idempotency, events)]
-        end
-    end
-
-    Subscriber([External subscriber default: NoOp])
-
-    SubmitPages -. one message per page .-> Q1
-    CheckPages -. read status .-> DDB
-    Merge -. read stage state .-> DDB
-    Merge -. read result objects .-> S3
-    Merge -. write merged result .-> S3
-    Notify -. read terminal state .-> DDB
-    Notify -. post-commit notify .-> Subscriber
-
-    L1 --- S3
-    L1 --- DDB
-    L2 --- S3
-    L2 --- DDB
-
-    Done ~~~ Subscriber
-
-    style LG fill:none,stroke:#888,stroke-width:1.5px
-    style SFN fill:none
-    style CHAIN fill:none
-    style PERSIST fill:none
+    CheckPages -.-> DDB
+    Merge -.-> DDB
+    Merge -.-> S3
+    Notify -.-> DDB
 ```
 
 Step Functions owns the document workflow. SQS and Lambda own the per-page AI stage chain. They meet at DynamoDB, the control plane, and S3, the data plane.
@@ -99,7 +74,6 @@ The shipped credit-card statement chain is:
 ```text
 gemini/v1                    → multimodal extraction
 normalize_card_statement/v1  → removes phantom schedule and zero-amount rows
-enrich_transactions/v1       → attaches canonical merchant, category, and country
 ```
 
 Adding a stage requires one SQS queue, one Lambda, and one `addStage` call ([SPEC §S7](SPEC.md#s7-composition)).
