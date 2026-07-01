@@ -27,7 +27,9 @@ flowchart LR
     Choice -- failed --> MarkFailed[MarkJobFailed]
     Choice -- succeeded --> Merge
     MarkFailed --> Notify[NotifyCompletion]
-    Merge --> Notify
+    Merge --> Archive[ArchiveResult]
+    Archive --> Index[IndexKowloon]
+    Index --> Notify
 
     SubmitPages --> Q1[(stage-1-queue)]
     Q1 --> L1[stage-1 Lambda]
@@ -38,6 +40,11 @@ flowchart LR
     L1 -.-> DDB[(DynamoDB)]
     L2 -.-> S3[(S3 storage)]
     L2 -.-> DDB
+
+    CheckPages -.-> DDB
+    Merge -.-> DDB
+    Merge -.-> S3
+    Notify -.-> DDB
 ```
 
 Step Functions owns the document workflow. SQS and Lambda own the per-page AI stage chain. They meet at DynamoDB, the control plane, and S3, the data plane.
