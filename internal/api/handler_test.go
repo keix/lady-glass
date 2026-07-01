@@ -281,8 +281,8 @@ func TestCreateJob_FreezesDefaultChainOnJobRecord(t *testing.T) {
 	if len(rec.Chain) == 0 {
 		t.Fatal("Chain empty; createJob must freeze the resolved StageSpec list")
 	}
-	if rec.Chain[len(rec.Chain)-1].Name != "normalize_card_statement" {
-		t.Fatalf("default chain terminal stage = %q, want normalize_card_statement", rec.Chain[len(rec.Chain)-1].Name)
+	if rec.Chain[len(rec.Chain)-1].Name != "enrich_transactions" {
+		t.Fatalf("default chain terminal stage = %q, want enrich_transactions", rec.Chain[len(rec.Chain)-1].Name)
 	}
 }
 
