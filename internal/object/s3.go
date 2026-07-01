@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
 )
 
 // S3Client is the subset of the AWS S3 client used by S3Store. Tests
@@ -17,6 +20,7 @@ import (
 type S3Client interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 }
 
 type S3Store struct {
@@ -72,6 +76,43 @@ func (s *S3Store) PutBytes(ctx context.Context, key string, body []byte, content
 		return "", fmt.Errorf("object: put %q: %w", key, err)
 	}
 	return fmt.Sprintf("s3://%s/%s", s.Bucket, key), nil
+}
+
+// URIFor is the s3:// URI at which key would land after a subsequent
+// Put. Mirrors the return of PutBytes exactly so callers can pre-compute
+// the URI without touching the network.
+func (s *S3Store) URIFor(key string) string {
+	return fmt.Sprintf("s3://%s/%s", s.Bucket, key)
+}
+
+// Exists issues a HeadObject and maps NoSuchKey / 404 to (false, nil).
+// Any other error surfaces so callers do not silently proceed on a
+// transient network failure.
+func (s *S3Store) Exists(ctx context.Context, uri string) (bool, error) {
+	bucket, key, err := parseS3URI(uri)
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.Client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}); err != nil {
+		var nsk *types.NoSuchKey
+		if errors.As(err, &nsk) {
+			return false, nil
+		}
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) {
+			// S3 HeadObject returns NotFound (not NoSuchKey) when the
+			// key is absent; match on the code so both spellings behave
+			// the same way.
+			if apiErr.ErrorCode() == "NotFound" || apiErr.ErrorCode() == "NoSuchKey" {
+				return false, nil
+			}
+		}
+		return false, fmt.Errorf("object: head %q: %w", uri, err)
+	}
+	return true, nil
 }
 
 func parseS3URI(uri string) (bucket, key string, err error) {

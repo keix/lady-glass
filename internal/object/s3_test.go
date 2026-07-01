@@ -12,6 +12,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithy "github.com/aws/smithy-go"
 
 	"github.com/keix/lady-glass/internal/object"
 )
@@ -21,6 +23,7 @@ type fakeS3Client struct {
 	lastPut *s3.PutObjectInput
 	putErr  error
 	getErr  error
+	headErr error
 }
 
 func newFakeS3Client() *fakeS3Client {
@@ -49,6 +52,20 @@ func (f *fakeS3Client) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...
 		return nil, fmt.Errorf("object not found: %s/%s", aws.ToString(in.Bucket), aws.ToString(in.Key))
 	}
 	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(body))}, nil
+}
+
+func (f *fakeS3Client) HeadObject(_ context.Context, in *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	if f.headErr != nil {
+		return nil, f.headErr
+	}
+	key := aws.ToString(in.Bucket) + "/" + aws.ToString(in.Key)
+	if _, ok := f.objects[key]; !ok {
+		// The real SDK returns a NotFound API error with code
+		// "NotFound"; the fake reproduces that shape so S3Store.Exists
+		// exercises its NotFound-mapping branch.
+		return nil, &smithy.GenericAPIError{Code: "NotFound", Message: "not found"}
+	}
+	return &s3.HeadObjectOutput{}, nil
 }
 
 func TestS3Store_PutBytes_PutsAndReturnsURI(t *testing.T) {
@@ -127,6 +144,69 @@ func TestS3Store_Get_RejectsNonS3URI(t *testing.T) {
 				t.Fatalf("expected error for %q, got nil", uri)
 			}
 		})
+	}
+}
+
+func TestS3Store_Exists_ReturnsTrueForPresentObject(t *testing.T) {
+	fake := newFakeS3Client()
+	store := object.NewS3Store(fake, "bkt")
+
+	uri, err := store.PutBytes(context.Background(), "manifests/j.json", []byte("{}"), "application/json")
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	ok, err := store.Exists(context.Background(), uri)
+	if err != nil {
+		t.Fatalf("exists: %v", err)
+	}
+	if !ok {
+		t.Fatal("exists = false, want true")
+	}
+}
+
+func TestS3Store_Exists_ReturnsFalseForNotFound(t *testing.T) {
+	// The archive-result stage relies on this branch to short-circuit
+	// its rerun: HeadObject → NotFound must be (false, nil), not an
+	// error that stops the stage from proceeding.
+	fake := newFakeS3Client()
+	store := object.NewS3Store(fake, "bkt")
+
+	ok, err := store.Exists(context.Background(), "s3://bkt/nothing-here.json")
+	if err != nil {
+		t.Fatalf("exists: %v", err)
+	}
+	if ok {
+		t.Fatal("exists = true, want false for missing object")
+	}
+}
+
+func TestS3Store_Exists_ReturnsFalseForNoSuchKey(t *testing.T) {
+	// LocalStack / some SDK code paths surface NoSuchKey (the typed
+	// exception) instead of a generic NotFound APIError. Both spellings
+	// must map to (false, nil).
+	fake := newFakeS3Client()
+	fake.headErr = &types.NoSuchKey{}
+	store := object.NewS3Store(fake, "bkt")
+
+	ok, err := store.Exists(context.Background(), "s3://bkt/whatever.json")
+	if err != nil {
+		t.Fatalf("exists: %v", err)
+	}
+	if ok {
+		t.Fatal("exists = true, want false")
+	}
+}
+
+func TestS3Store_Exists_SurfacesTransportError(t *testing.T) {
+	// A non-NotFound HeadObject error is a transport / permissions
+	// failure; the stage MUST NOT interpret that as "safe to write" or
+	// the retry story turns into an accidental overwrite.
+	fake := newFakeS3Client()
+	fake.headErr = errors.New("simulated head failure")
+	store := object.NewS3Store(fake, "bkt")
+
+	if _, err := store.Exists(context.Background(), "s3://bkt/k.json"); err == nil {
+		t.Fatal("expected transport error to propagate, got nil")
 	}
 }
 
