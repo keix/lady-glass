@@ -18,19 +18,20 @@ Lady Glass uses Step Functions for document-level orchestration and SQS + Lambda
 
 ```mermaid
 flowchart TB
-    User([API / CLI]) --> StartExec[StartExecution]
+    User([API / CLI]) --> StartExec
 
     subgraph SFN["Step Functions"]
         direction TB
-        StartExec --> SubmitPages
+        StartExec[StartExecution] --> SubmitPages
         SubmitPages --> WaitLoop[Wait]
         WaitLoop --> CheckPages
         CheckPages --> Choice{job status?}
         Choice -- pending --> WaitLoop
         Choice -- failed --> MarkFailed[MarkJobFailed]
-        Choice -- succeeded --> Merge
-        MarkFailed --> Done([End])
-        Merge --> Done
+        Choice -- succeeded --> Merge[Merge]
+        MarkFailed --> Notify[NotifyCompletion]
+        Merge --> Notify
+        Notify --> Done([End])
     end
 
     subgraph CHAIN["SQS + Lambda"]
@@ -41,9 +42,9 @@ flowchart TB
     end
 
     subgraph DATA["Data plane"]
-        direction LR
-        S3[(S3 — images, stage results, merged output)]
-        DDB[(DynamoDB — stage state, idempotency, events)]
+        direction TB
+        S3[(S3: images, stage results, merged output)]
+        DDB[(DynamoDB: stage state, idempotency, events)]
     end
 
     SubmitPages -. one message per page .-> Q1
@@ -51,11 +52,17 @@ flowchart TB
     Merge -. read stage state .-> DDB
     Merge -. read result objects .-> S3
     Merge -. write merged result .-> S3
+    Notify -. read terminal state .-> DDB
+    Notify -. post-commit notify .-> Subscriber([External subscriber default: NoOp])
 
     L1 --- S3
     L1 --- DDB
     L2 --- S3
     L2 --- DDB
+
+    style SFN fill:none,stroke:#888,stroke-width:1.5px
+    style CHAIN fill:none,stroke:#888,stroke-width:1.5px
+    style DATA fill:none,stroke:#888,stroke-width:1.5px
 ```
 
 Step Functions owns the document workflow. SQS and Lambda own the per-page AI stage chain. They meet at DynamoDB, the control plane, and S3, the data plane.
