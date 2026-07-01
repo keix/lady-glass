@@ -35,11 +35,15 @@ flowchart LR
     Q1 --> L1[stage-1 Lambda]
     L1 -- enqueue --> Q2[(stage-2-queue)]
     Q2 --> L2[stage-2 Lambda]
+    L2 -- enqueue --> Q3[(stage-3-queue)]
+    Q3 --> L3[stage-3 Lambda]
 
     L1 -.-> S3[(S3)]
     L1 -.-> DDB[(DynamoDB)]
     L2 -.-> S3[(S3 storage)]
     L2 -.-> DDB
+    L3 -.-> S3
+    L3 -.-> DDB
 
     CheckPages -.-> DDB
     Merge -.-> DDB
