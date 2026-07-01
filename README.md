@@ -38,7 +38,7 @@ flowchart TB
         end
 
         subgraph CHAIN["SQS + Lambda"]
-            direction LR
+            direction TB
             Q1[(stage-1-queue)] --> L1[stage-1 Lambda]
             L1 -- enqueue next stage --> Q2[(stage-2-queue)]
             Q2 --> L2[stage-2 Lambda]
