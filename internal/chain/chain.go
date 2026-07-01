@@ -40,6 +40,7 @@ var registry = map[string]pipeline.ChainSpec{
 		Stages: []pipeline.StageSpec{
 			{Name: "gemini", Version: "v1", QueueName: "gemini"},
 			{Name: "normalize_card_statement", Version: "v1", QueueName: "normalize_card_statement"},
+			{Name: "enrich_transactions", Version: "v1", QueueName: "enrich_transactions"},
 		},
 	},
 }

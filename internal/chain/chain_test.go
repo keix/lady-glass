@@ -24,18 +24,24 @@ func TestResolve_ReturnsCardStatementV1AsTheShippedDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	// Shape pin: the chain has exactly two stages and the queue names
+	// Shape pin: the chain has exactly three stages and the queue names
 	// are the logical names the CDK wires the SQS URLs to. Changing
 	// either side without updating the other breaks new jobs at
 	// SubmitPages.
-	if len(spec.Stages) != 2 {
-		t.Fatalf("stages = %d, want 2: %+v", len(spec.Stages), spec.Stages)
+	if len(spec.Stages) != 3 {
+		t.Fatalf("stages = %d, want 3: %+v", len(spec.Stages), spec.Stages)
 	}
 	if spec.Stages[0].Name != "gemini" || spec.Stages[0].Version != "v1" {
 		t.Fatalf("stage[0] = %+v, want gemini/v1", spec.Stages[0])
 	}
 	if spec.Stages[1].Name != "normalize_card_statement" || spec.Stages[1].Version != "v1" {
 		t.Fatalf("stage[1] = %+v, want normalize_card_statement/v1", spec.Stages[1])
+	}
+	if spec.Stages[2].Name != "enrich_transactions" || spec.Stages[2].Version != "v1" {
+		t.Fatalf("stage[2] = %+v, want enrich_transactions/v1", spec.Stages[2])
+	}
+	if spec.Stages[2].QueueName != "enrich_transactions" {
+		t.Fatalf("stage[2].QueueName = %q, want %q", spec.Stages[2].QueueName, "enrich_transactions")
 	}
 }
 
