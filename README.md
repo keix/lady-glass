@@ -38,7 +38,7 @@ flowchart TB
         end
 
         subgraph CHAIN["SQS + Lambda"]
-            direction TB
+            direction LR
             Q1[(stage-1-queue)] --> L1[stage-1 Lambda]
             L1 -- enqueue next stage --> Q2[(stage-2-queue)]
             Q2 --> L2[stage-2 Lambda]
@@ -53,12 +53,13 @@ flowchart TB
 
     Subscriber([External subscriber default: NoOp])
 
-    SubmitPages -.-> Q1
-    CheckPages -.-> DDB
-    Merge -.-> DDB
-    Merge -.-> S3
-    Notify -.-> DDB
-    Notify -.-> Subscriber
+    SubmitPages -. one message per page .-> Q1
+    CheckPages -. read status .-> DDB
+    Merge -. read stage state .-> DDB
+    Merge -. read result objects .-> S3
+    Merge -. write merged result .-> S3
+    Notify -. read terminal state .-> DDB
+    Notify -. post-commit notify .-> Subscriber
 
     L1 --- S3
     L1 --- DDB
