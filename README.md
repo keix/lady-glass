@@ -17,11 +17,11 @@ Lady Glass is a pair of glasses for documents — her name was Miu.
 Lady Glass uses Step Functions for document-level orchestration and SQS + Lambda for page-level AI execution. DynamoDB is the control plane. S3 is the data plane.
 
 ```mermaid
-flowchart TB
+flowchart LR
     User([API / CLI]) --> StartExec[StartExecution]
 
     subgraph LG["Lady Glass"]
-        direction TB
+        direction LR
 
         subgraph SFN["Step Functions"]
             direction TB
@@ -30,19 +30,19 @@ flowchart TB
             WaitLoop --> CheckPages
             CheckPages --> Choice{job status?}
             Choice -- pending --> WaitLoop
+            Choice --> MarkFailed[MarkJobFailed]
             Choice -- succeeded --> Merge
+            MarkFailed --> Notify[NotifyCompletion]
             Merge --> Archive[ArchiveResult]
             Archive --> Index[IndexKowloon]
             Index --> Notify[NotifyCompletion]
-            Choice -- failed --> MarkFailed[MarkJobFailed]
-            MarkFailed --> Notify
             Notify --> Done([End])
         end
 
         subgraph CHAIN["SQS + Lambda"]
             direction LR
             Q1[(stage-1-queue)] --> L1[stage-1 Lambda]
-            L1 -- enqueue next stage --> Q2[(stage-2-queue)]
+            L1 -- enqueue --> Q2[(stage-2-queue)]
             Q2 --> L2[stage-2 Lambda]
         end
 
@@ -98,7 +98,6 @@ The shipped credit-card statement chain is:
 ```text
 gemini/v1                    → multimodal extraction
 normalize_card_statement/v1  → removes phantom schedule and zero-amount rows
-enrich_transactions/v1       → attaches canonical merchant, category, and country
 ```
 
 Adding a stage requires one SQS queue, one Lambda, and one `addStage` call ([SPEC §S7](SPEC.md#s7-composition)).
