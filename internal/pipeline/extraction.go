@@ -100,4 +100,21 @@ type Transaction struct {
 	// "transport") or that a later normalisation stage attaches. Empty
 	// in v0 since the prompt does not ask for it.
 	Category string `json:"category,omitempty"`
+
+	// MerchantNormalized is the canonical merchant name attached by the
+	// enrich_transactions stage. It collapses OCR / provider variants of
+	// the same merchant ("スターバックス コーヒー",
+	// "スターバックスコーヒージャパン") onto a single label ("Starbucks")
+	// so downstream indexing and aggregation can filter and group on a
+	// stable key. Empty when the merchant is not in the enrich
+	// dictionary; consumers MUST fall back to Merchant in that case.
+	MerchantNormalized string `json:"merchant_normalized,omitempty"`
+
+	// Country is the ISO 3166-1 alpha-2 country code the transaction
+	// took place in ("JP", "MY", "SG", ...). Populated by
+	// enrich_transactions either from the merchant dictionary (when a
+	// specific merchant is known to be in a specific country) or
+	// derived from ForeignCurrency (MYR→MY, SGD→SG, USD→US, ...). Empty
+	// when neither signal is available.
+	Country string `json:"country,omitempty"`
 }

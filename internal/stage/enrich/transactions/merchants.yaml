@@ -1,0 +1,27 @@
+- canonical: FamilyMart
+  category: convenience_store
+  aliases:
+    - ファミリーマート
+    - Family Mart
+    - FAMILY MART
+    - ﾌｧﾐﾘｰﾏｰﾄ
+    - PAYPAY *ファミリーマート
+
+- canonical: Starbucks
+  category: cafe
+  aliases:
+    - スターバックス コーヒー
+    - スターバックスコーヒージャパン
+    - STARBUCKS
+
+- canonical: Rehan Restaurant
+  category: restaurant
+  country: MY
+  aliases:
+    - REHAN RESTAURANT
+
+- canonical: Restoran Nasi Kandar
+  category: restaurant
+  country: MY
+  aliases:
+    - RESTORAN NASI KANDAR

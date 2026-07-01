@@ -13,6 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.44.0
 	github.com/pdfcpu/pdfcpu v0.13.0
 	google.golang.org/genai v1.62.0
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
@@ -56,5 +57,4 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240903143218-8af14fe29dc1 // indirect
 	google.golang.org/grpc v1.66.2 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
