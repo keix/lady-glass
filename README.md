@@ -74,6 +74,7 @@ The shipped credit-card statement chain is:
 ```text
 gemini/v1                    → multimodal extraction
 normalize_card_statement/v1  → removes phantom schedule and zero-amount rows
+enrich_transactions/v1       → attaches canonical merchant, category, and country
 ```
 
 Adding a stage requires one SQS queue, one Lambda, and one `addStage` call ([SPEC §S7](SPEC.md#s7-composition)).
