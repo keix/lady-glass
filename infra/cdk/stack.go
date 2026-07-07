@@ -377,14 +377,29 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	// reads it from execution input instead of this substitution.
 	tenantID := jsii.String("keix")
 
-	// KOWLOON_BASE_URL is the private Kowloon front door. Operator
-	// provisions it once before the first deploy:
-	//   aws ssm put-parameter --type String --name /lady-glass/kowloon-base-url --value https://kowloon.internal
-	// KOWLOON_API_KEY is intentionally NOT wired yet — v0 Kowloon has no
-	// front-door auth (§9); the client sends no X-Api-Key when it is empty.
+	// Kowloon runs behind nginx on the seven-swords host, exposed at
+	// https://seven-swords.net/kowloon and protected by an Asteroid
+	// OIDC bearer. The index Lambda fetches a client_credentials token
+	// from Asteroid's /token and Kowloon verifies it.
+	//
+	// Operator provisions these SSM parameters once before deploy:
+	//   /lady-glass/kowloon-base-url            e.g. https://seven-swords.net/kowloon
+	//   /lady-glass/kowloon-oauth-token-url     e.g. https://seven-swords.net/token
+	//   /lady-glass/kowloon-oauth-client-secret the lady-glass client secret
+	//     (same value as the secret in seven-swords.net data/clients.yaml)
 	kowloonBaseURL := awsssm.StringParameter_ValueForStringParameter(
 		stack,
 		jsii.String("/lady-glass/kowloon-base-url"),
+		nil,
+	)
+	kowloonTokenURL := awsssm.StringParameter_ValueForStringParameter(
+		stack,
+		jsii.String("/lady-glass/kowloon-oauth-token-url"),
+		nil,
+	)
+	kowloonClientSecret := awsssm.StringParameter_ValueForStringParameter(
+		stack,
+		jsii.String("/lady-glass/kowloon-oauth-client-secret"),
 		nil,
 	)
 
@@ -408,6 +423,14 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		"LADY_GLASS_TABLE":            table.TableName(),
 		"LADY_GLASS_PERMANENT_BUCKET": permanentBucket.BucketName(),
 		"KOWLOON_BASE_URL":            kowloonBaseURL,
+		// OAuth2 client_credentials against Asteroid. client_id and
+		// audience are non-secret and stable; the token URL and secret
+		// come from SSM. Setting the token URL is what flips the client
+		// from the unauthenticated path to bearer auth.
+		"KOWLOON_OAUTH_TOKEN_URL":     kowloonTokenURL,
+		"KOWLOON_OAUTH_CLIENT_ID":     jsii.String("lady-glass"),
+		"KOWLOON_OAUTH_CLIENT_SECRET": kowloonClientSecret,
+		"KOWLOON_OAUTH_AUDIENCE":      jsii.String("kowloon"),
 	})
 	table.GrantReadData(indexKowloon)
 	permanentBucket.GrantReadWrite(indexKowloon, nil)
