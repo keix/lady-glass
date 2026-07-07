@@ -21,7 +21,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 // IndexResultRequest is the payload for POST /v1/index-result. JobID
@@ -91,6 +95,42 @@ func New(baseURL, apiKey string) *HTTPClient {
 		BaseURL: baseURL,
 		APIKey:  apiKey,
 		HTTP:    &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// OAuthConfig configures OAuth2 client_credentials authentication against
+// the provider's token endpoint (Asteroid, https://seven-swords.net/token).
+// Kowloon verifies the resulting ES256 bearer token; Audience is sent as
+// the "audience" token parameter and must match the aud Kowloon checks.
+type OAuthConfig struct {
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+	Audience     string
+}
+
+// NewWithOAuth builds a client that authenticates to Kowloon with an
+// OAuth2 client_credentials bearer token instead of an X-Api-Key. The
+// oauth2 transport injects "Authorization: Bearer <token>" on every
+// request and refreshes the token before it expires (tokens are cached
+// in-process between calls). The 30s timeout matches New — the same
+// client handles both the token fetch and the index call.
+func NewWithOAuth(baseURL string, cfg OAuthConfig) *HTTPClient {
+	cc := clientcredentials.Config{
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		TokenURL:     cfg.TokenURL,
+	}
+	if cfg.Audience != "" {
+		cc.EndpointParams = url.Values{"audience": {cfg.Audience}}
+	}
+	ts := cc.TokenSource(context.Background())
+	return &HTTPClient{
+		BaseURL: baseURL,
+		HTTP: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: &oauth2.Transport{Source: ts, Base: http.DefaultTransport},
+		},
 	}
 }
 
