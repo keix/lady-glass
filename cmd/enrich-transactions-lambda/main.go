@@ -17,17 +17,23 @@ import (
 	"github.com/keix/lady-glass/internal/object"
 	"github.com/keix/lady-glass/internal/pipeline"
 	"github.com/keix/lady-glass/internal/queue"
-	"github.com/keix/lady-glass/internal/stage/normalize/cardstatement"
+	enrichtx "github.com/keix/lady-glass/internal/stage/enrich/transactions"
 	"github.com/keix/lady-glass/internal/store"
 )
 
-// normalize-card-statement-lambda is the post-processing stage that runs
-// after Gemini extraction in the credit-card-statement chain. It does
-// not talk to any AI provider; it only reads the previous stage's
-// PageExtractionResult from S3, applies the v1 normaliser rules, and
-// writes the cleaned-up result back. It chains onward to
-// enrich_transactions when the LADY_GLASS_NEXT_* env set is wired; with
-// those unset it behaves as a terminal stage.
+// enrich-transactions-lambda is the post-normalisation stage in the
+// credit-card-statement chain: it reads the previous stage's
+// PageExtractionResult from S3, attaches MerchantNormalized / Category /
+// Country to every transaction using the embedded merchants dictionary
+// (rules only in v1, no AI call), and writes the enriched result back.
+// It runs after normalize_card_statement and is the last per-page chain
+// stage — the SFN Merge → ArchiveResult → IndexKowloon steps take over
+// once every page is done.
+//
+// The dictionary is the embedded seed (merchants.yaml compiled into the
+// binary); DefaultDictionary panics at process start if that seed is
+// invalid, so a broken dictionary surfaces on cold start rather than on
+// the first message.
 //
 // Required env:
 //
@@ -38,10 +44,10 @@ import (
 //
 //	LADY_GLASS_RETENTION_DAYS     DDB TTL window (SPEC §S9)  (14)
 //
-// Optional env (next-stage wiring; leave unset to make normalize terminal):
+// Optional env (next-stage wiring; leave unset to make enrich terminal):
 //
-//	LADY_GLASS_NEXT_STAGE_NAME       e.g. "enrich_transactions"
-//	LADY_GLASS_NEXT_STAGE_VERSION    e.g. "v1"
+//	LADY_GLASS_NEXT_STAGE_NAME       next stage name
+//	LADY_GLASS_NEXT_STAGE_VERSION    next stage version
 //	LADY_GLASS_NEXT_QUEUE_NAME       logical queue name for the next stage
 //	LADY_GLASS_NEXT_QUEUE_URL        SQS URL the next stage's ESM is bound to
 func main() {
@@ -63,7 +69,12 @@ func main() {
 	nextStage, queueURLs := loadNextStageFromEnv()
 	q := queue.NewSQSQueue(sqs.NewFromConfig(cfg), queueURLs)
 
-	step := &cardstatement.Step{Objects: objects}
+	// DefaultDictionary panics on an invalid embedded seed — do it here
+	// so the failure is a cold-start crash, not a per-message error.
+	step := &enrichtx.Step{
+		Dictionary: enrichtx.DefaultDictionary(),
+		Objects:    objects,
+	}
 
 	ex := &executor.Executor{
 		Step:      step,
