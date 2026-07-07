@@ -16,6 +16,7 @@ OUT="$ROOT/infra/cdk/bin"
 LAMBDAS=(
     gemini-lambda
     normalize-card-statement-lambda
+    enrich-transactions-lambda
     submit-pages-lambda
     check-pages-lambda
     merge-lambda
@@ -23,6 +24,8 @@ LAMBDAS=(
     notify-completion-lambda
     api-lambda
     render-pages-lambda
+    archive-result-lambda
+    index-kowloon-lambda
 )
 
 rm -rf "$OUT"

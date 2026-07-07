@@ -92,6 +92,21 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		},
 	})
 
+	// The permanent bucket is the durable side of the split the Kowloon
+	// integration (docs/kowloon-integration.md §5) introduces: ArchiveResult
+	// copies the flattened transactions.v1 document, the raw PDF, and a
+	// per-job manifest here, and IndexKowloon writes its sidecar here. It
+	// deliberately has NO lifecycle expiry — unlike the 14-day artifact
+	// bucket, this is the record of record, the source Kowloon rebuilds
+	// its index from. Versioned so an accidental overwrite stays
+	// recoverable; RETAIN so a stack teardown never deletes durable data.
+	permanentBucket := awss3.NewBucket(stack, jsii.String("PermanentBucket"), &awss3.BucketProps{
+		Encryption:        awss3.BucketEncryption_S3_MANAGED,
+		BlockPublicAccess: awss3.BlockPublicAccess_BLOCK_ALL(),
+		Versioned:         jsii.Bool(true),
+		RemovalPolicy:     awscdk.RemovalPolicy_RETAIN,
+	})
+
 	// --- Control plane ---------------------------------------------------
 
 	table := awsdynamodb.NewTable(stack, jsii.String("StateTable"), &awsdynamodb.TableProps{
@@ -149,6 +164,22 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(600)),
 		DeadLetterQueue: &awssqs.DeadLetterQueue{
 			Queue:           normalizeDLQ,
+			MaxReceiveCount: jsii.Number(5),
+		},
+	})
+
+	enrichDLQ := awssqs.NewQueue(stack, jsii.String("EnrichTransactionsDLQ"), &awssqs.QueueProps{
+		RetentionPeriod: awscdk.Duration_Days(jsii.Number(14)),
+	})
+
+	// enrich_transactions is the terminal per-page stage — pure compute
+	// (S3 read + dictionary lookup + S3 write), same profile as the
+	// normaliser, so the same 600s VT (Lambda timeout 300s × 2 margin,
+	// and the ESM's VT >= function-timeout floor) applies.
+	enrichQueue := awssqs.NewQueue(stack, jsii.String("EnrichTransactionsQueue"), &awssqs.QueueProps{
+		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(600)),
+		DeadLetterQueue: &awssqs.DeadLetterQueue{
+			Queue:           enrichDLQ,
 			MaxReceiveCount: jsii.Number(5),
 		},
 	})
@@ -252,6 +283,30 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	// and 25 is comfortable headroom for a 25-page statement to drain
 	// in parallel.
 	normalizeLambda := addStage("NormalizeCardStatementLambda", "normalize-card-statement-lambda", normalizeQueue, &map[string]*string{
+		"LADY_GLASS_TABLE":              table.TableName(),
+		"LADY_GLASS_BUCKET":             bucket.BucketName(),
+		"LADY_GLASS_RETENTION_DAYS":     retentionDays,
+		"LADY_GLASS_NEXT_STAGE_NAME":    jsii.String("enrich_transactions"),
+		"LADY_GLASS_NEXT_STAGE_VERSION": jsii.String("v1"),
+		"LADY_GLASS_NEXT_QUEUE_NAME":    jsii.String("enrich_transactions"),
+		"LADY_GLASS_NEXT_QUEUE_URL":     enrichQueue.QueueUrl(),
+	}, stageRuntimeProps{
+		BatchSize:      1,
+		MaxConcurrency: 25,
+	})
+
+	bucket.GrantReadWrite(normalizeLambda, nil)
+	table.GrantReadWriteData(normalizeLambda)
+	enrichQueue.GrantSendMessages(normalizeLambda)
+
+	// --- Stage Lambda: enrich_transactions ------------------------------
+
+	// Terminal per-page stage: attaches MerchantNormalized / Category /
+	// Country from the embedded merchants dictionary (rules only, no
+	// provider call). No next-stage env — the SQS chain ends here and the
+	// SFN Merge → ArchiveResult → IndexKowloon steps take over. Same
+	// concurrency headroom as the normaliser.
+	enrichLambda := addStage("EnrichTransactionsLambda", "enrich-transactions-lambda", enrichQueue, &map[string]*string{
 		"LADY_GLASS_TABLE":          table.TableName(),
 		"LADY_GLASS_BUCKET":         bucket.BucketName(),
 		"LADY_GLASS_RETENTION_DAYS": retentionDays,
@@ -260,8 +315,8 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 		MaxConcurrency: 25,
 	})
 
-	bucket.GrantReadWrite(normalizeLambda, nil)
-	table.GrantReadWriteData(normalizeLambda)
+	bucket.GrantReadWrite(enrichLambda, nil)
+	table.GrantReadWriteData(enrichLambda)
 
 	// --- Workflow Lambdas ------------------------------------------------
 
@@ -311,6 +366,52 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	})
 	table.GrantReadData(notifyCompletion)
 
+	// --- Kowloon integration Lambdas (docs/kowloon-integration.md §5-6) ---
+
+	// tenantID is the single customer scope Lady Glass runs under today.
+	// The archive key partitions on it (tenant=<id>/...) and Kowloon uses
+	// it to scope search results. There is no per-job tenant model yet, so
+	// it is a stack-level constant threaded into the ArchiveResult /
+	// IndexKowloon SFN states via DefinitionSubstitutions. When a real
+	// multi-tenant model lands, this moves to the job record and the ASL
+	// reads it from execution input instead of this substitution.
+	tenantID := jsii.String("keix")
+
+	// KOWLOON_BASE_URL is the private Kowloon front door. Operator
+	// provisions it once before the first deploy:
+	//   aws ssm put-parameter --type String --name /lady-glass/kowloon-base-url --value https://kowloon.internal
+	// KOWLOON_API_KEY is intentionally NOT wired yet — v0 Kowloon has no
+	// front-door auth (§9); the client sends no X-Api-Key when it is empty.
+	kowloonBaseURL := awsssm.StringParameter_ValueForStringParameter(
+		stack,
+		jsii.String("/lady-glass/kowloon-base-url"),
+		nil,
+	)
+
+	// ArchiveResult reads the merged result from the artifact (stage)
+	// bucket and writes the flattened archive + manifest to the permanent
+	// bucket. Read-only on DynamoDB (GetJob), read on the stage bucket,
+	// read-write on the permanent bucket.
+	archiveResult := makeLambda("ArchiveResultLambda", "archive-result-lambda", &map[string]*string{
+		"LADY_GLASS_TABLE":            table.TableName(),
+		"LADY_GLASS_BUCKET":           bucket.BucketName(),
+		"LADY_GLASS_PERMANENT_BUCKET": permanentBucket.BucketName(),
+	})
+	table.GrantReadData(archiveResult)
+	bucket.GrantRead(archiveResult, nil)
+	permanentBucket.GrantReadWrite(archiveResult, nil)
+
+	// IndexKowloon reads the manifest and writes the sidecar in the
+	// permanent bucket, and makes the one HTTP call to Kowloon. Read-only
+	// on DynamoDB (GetJob); the stage bucket is not touched here.
+	indexKowloon := makeLambda("IndexKowloonLambda", "index-kowloon-lambda", &map[string]*string{
+		"LADY_GLASS_TABLE":            table.TableName(),
+		"LADY_GLASS_PERMANENT_BUCKET": permanentBucket.BucketName(),
+		"KOWLOON_BASE_URL":            kowloonBaseURL,
+	})
+	table.GrantReadData(indexKowloon)
+	permanentBucket.GrantReadWrite(indexKowloon, nil)
+
 	// --- Step Functions state machine ------------------------------------
 
 	// The ASL ships in the repo at ../state_machine.asl.json. Loading it
@@ -324,12 +425,15 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 			nil,
 		),
 		DefinitionSubstitutions: &map[string]*string{
-			"SubmitPagesLambdaArn":       submitPages.FunctionArn(),
-			"CheckPagesLambdaArn":        checkPages.FunctionArn(),
-			"MergeLambdaArn":             merge.FunctionArn(),
-			"MarkJobFailedLambdaArn":     markFailed.FunctionArn(),
-			"RenderPagesLambdaArn":       renderPages.FunctionArn(),
-			"NotifyCompletionLambdaArn":  notifyCompletion.FunctionArn(),
+			"SubmitPagesLambdaArn":      submitPages.FunctionArn(),
+			"CheckPagesLambdaArn":       checkPages.FunctionArn(),
+			"MergeLambdaArn":            merge.FunctionArn(),
+			"MarkJobFailedLambdaArn":    markFailed.FunctionArn(),
+			"RenderPagesLambdaArn":      renderPages.FunctionArn(),
+			"NotifyCompletionLambdaArn": notifyCompletion.FunctionArn(),
+			"ArchiveResultLambdaArn":    archiveResult.FunctionArn(),
+			"IndexKowloonLambdaArn":     indexKowloon.FunctionArn(),
+			"TenantID":                  tenantID,
 		},
 	})
 
@@ -342,6 +446,8 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	markFailed.GrantInvoke(stateMachine)
 	renderPages.GrantInvoke(stateMachine)
 	notifyCompletion.GrantInvoke(stateMachine)
+	archiveResult.GrantInvoke(stateMachine)
+	indexKowloon.GrantInvoke(stateMachine)
 
 	// --- API Lambda + HTTP API -------------------------------------------
 
@@ -403,6 +509,9 @@ func NewLadyGlassStack(scope constructs.Construct, id string, props *LadyGlassSt
 	})
 	awscdk.NewCfnOutput(stack, jsii.String("BucketName"), &awscdk.CfnOutputProps{
 		Value: bucket.BucketName(),
+	})
+	awscdk.NewCfnOutput(stack, jsii.String("PermanentBucketName"), &awscdk.CfnOutputProps{
+		Value: permanentBucket.BucketName(),
 	})
 	awscdk.NewCfnOutput(stack, jsii.String("GeminiQueueUrl"), &awscdk.CfnOutputProps{
 		Value: geminiQueue.QueueUrl(),
