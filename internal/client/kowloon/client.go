@@ -120,6 +120,12 @@ func NewWithOAuth(baseURL string, cfg OAuthConfig) *HTTPClient {
 		ClientID:     cfg.ClientID,
 		ClientSecret: cfg.ClientSecret,
 		TokenURL:     cfg.TokenURL,
+		// Send client_id/secret in the POST body (client_secret_post),
+		// not the Authorization header. The provider sits behind a proxy
+		// (Cloudflare) that drops the Authorization header before it
+		// reaches the token endpoint, so HTTP Basic auth (oauth2's
+		// default) never authenticates. Asteroid accepts both styles.
+		AuthStyle: oauth2.AuthStyleInParams,
 	}
 	if cfg.Audience != "" {
 		cc.EndpointParams = url.Values{"audience": {cfg.Audience}}

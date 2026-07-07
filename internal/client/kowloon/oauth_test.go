@@ -17,6 +17,8 @@ func TestNewWithOAuth_AttachesBearer(t *testing.T) {
 	var (
 		sawGrantType string
 		sawAudience  string
+		sawClientID  string
+		sawAuthHdr   string
 		sawBearer    string
 	)
 
@@ -25,6 +27,11 @@ func TestNewWithOAuth_AttachesBearer(t *testing.T) {
 		_ = r.ParseForm()
 		sawGrantType = r.PostForm.Get("grant_type")
 		sawAudience = r.PostForm.Get("audience")
+		// Credentials must ride in the body (client_secret_post), not the
+		// Authorization header — the provider sits behind a proxy that
+		// drops Authorization.
+		sawClientID = r.PostForm.Get("client_id")
+		sawAuthHdr = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "tok-123",
@@ -70,6 +77,12 @@ func TestNewWithOAuth_AttachesBearer(t *testing.T) {
 	}
 	if sawAudience != "kowloon" {
 		t.Errorf("audience=%q, want kowloon", sawAudience)
+	}
+	if sawClientID != "lady-glass" {
+		t.Errorf("client_id=%q, want lady-glass in body (client_secret_post)", sawClientID)
+	}
+	if sawAuthHdr != "" {
+		t.Errorf("token request must not send Authorization header, got %q", sawAuthHdr)
 	}
 	if sawBearer != "Bearer tok-123" {
 		t.Errorf("Authorization=%q, want %q", sawBearer, "Bearer tok-123")
