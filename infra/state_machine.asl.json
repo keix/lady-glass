@@ -1,5 +1,5 @@
 {
-  "Comment": "Lady Glass document-level workflow. Step Functions orchestrates SubmitPages -> Wait -> CheckPages -> Choice -> Merge / MarkJobFailed. The optional RenderPages branch splits PDFs into per-page PDFs before SubmitPages when input.mode == 'rendered'. Per-page AI work happens entirely inside the SQS+Lambda chain, not in this state machine.",
+  "Comment": "Lady Glass document-level workflow. Step Functions orchestrates SubmitPages -> Wait -> CheckPages -> Choice -> Merge -> ArchiveResult -> IndexKowloon / MarkJobFailed. The optional RenderPages branch splits PDFs into per-page PDFs before SubmitPages when input.mode == 'rendered'. Per-page AI work (gemini -> normalize_card_statement -> enrich_transactions) happens entirely inside the SQS+Lambda chain, not in this state machine. ArchiveResult flattens the merged per-page result into a permanent-bucket transactions.v1 document; IndexKowloon hands that document to Kowloon. Both are best-effort with respect to the job's own success: a failure there is caught and the job still reaches NotifyCompletion, because the document itself was already merged successfully.",
   "StartAt": "ModeChoice",
   "States": {
     "ModeChoice": {
@@ -90,6 +90,57 @@
         "final_version.$": "$.final_version"
       },
       "ResultPath": "$.merge_result",
+      "Next": "ArchiveResult"
+    },
+    "ArchiveResult": {
+      "Type": "Task",
+      "Resource": "${ArchiveResultLambdaArn}",
+      "Parameters": {
+        "job_id.$": "$.job_id",
+        "tenant_id": "${TenantID}"
+      },
+      "ResultPath": "$.archive_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.archive_error",
+          "Next": "NotifyCompletion"
+        }
+      ],
+      "Next": "IndexKowloon"
+    },
+    "IndexKowloon": {
+      "Type": "Task",
+      "Resource": "${IndexKowloonLambdaArn}",
+      "Parameters": {
+        "job_id.$": "$.job_id",
+        "tenant_id": "${TenantID}",
+        "manifest_uri.$": "$.archive_result.manifest_uri"
+      },
+      "ResultPath": "$.index_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.index_error",
+          "Next": "NotifyCompletion"
+        }
+      ],
       "Next": "NotifyCompletion"
     },
     "MarkJobFailed": {
